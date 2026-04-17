@@ -24,9 +24,7 @@ Requires **Python 3.9+**.
 ### Option 1 — pipx (recommended, isolated + globally on PATH)
 
 ```bash
-pipx install .
-# or, after publishing to PyPI:
-# pipx install mindmark
+pipx install mindmark
 ```
 
 ### Option 2 — regular pip / venv
@@ -65,24 +63,24 @@ First run downloads the embedding model (~130 MB) to `~/.cache/fastembed` (or `%
 ### 3. Search in natural language
 
 ```bash
-mindmark find "how do I get access to kusto clusters"
-mindmark find "visa stamping appointment" -k 5
+mindmark find "python async tutorial"
+mindmark find "react hooks best practices" -k 5
 mindmark find "helm chart examples" --domain github.com
-mindmark find "safefly approval guide" --folder microsoft
+mindmark find "docker compose setup" --folder devops
 ```
 
 ### 4. Open a result directly
 
 ```bash
 mindmark open "k8s cheat sheet"           # opens the best match
-mindmark find "kusto access" --open 2     # opens result #2 from the list
+mindmark find "docker setup" --open 2     # opens result #2 from the list
 ```
 
 Tip: alias it to something even shorter.
 
 ```bash
 alias mm='mindmark open'
-mm "kusto access"
+mm "docker setup"
 ```
 
 ### 5. JSON for scripting / fzf / Alfred / Raycast
@@ -126,49 +124,74 @@ Switching models triggers a full re-embed automatically. See the [fastembed supp
 ## How it works
 
 1. **Parse** — a small stateful tokenizer reads the Netscape bookmarks HTML and extracts every `<A>` with its ancestor `<H3>` folder stack, so each bookmark knows its full folder path.
-2. **Embed** — each bookmark becomes the string `title | folder: Work/Kusto | domain: eng.ms | path: docs kusto access` and is passed through a BGE/MiniLM ONNX model. Vectors are L2-normalized so cosine similarity = dot product.
+2. **Embed** — each bookmark becomes the string `title | folder: Dev/Tools | domain: github.com | path: docs setup guide` and is passed through a BGE/MiniLM ONNX model. Vectors are L2-normalized so cosine similarity = dot product.
 3. **Store** — vectors live as `float32` BLOBs in a single SQLite file. For 800–10,000 bookmarks this is dramatically simpler than a vector DB and still sub-millisecond.
 4. **Search** — encode the query, take the dot product against all vectors, return the top-K.
 
 ---
 
-## Distribute it
+## Publishing to PyPI
 
-Pick one based on your audience:
+### First-time setup
 
-### A. GitHub release + pipx (easiest for individual users)
+1. Create an account at [pypi.org](https://pypi.org/account/register/)
+2. Generate an API token at [pypi.org/manage/account/token/](https://pypi.org/manage/account/token/)
+3. Install the build tools:
 
 ```bash
-# Developer publishes:
-python -m pip install build
-python -m build           # creates dist/mindmark-0.1.0-py3-none-any.whl
-gh release create v0.1.0 dist/*
-
-# Users install:
-pipx install https://github.com/<you>/mindmark/releases/download/v0.1.0/mindmark-0.1.0-py3-none-any.whl
+pip install build twine
 ```
 
-### B. Publish to PyPI
+### Test on TestPyPI first (recommended)
 
 ```bash
-python -m pip install build twine
+python -m build
+python -m twine upload --repository testpypi dist/*
+# verify it works:
+pipx install --index-url https://test.pypi.org/simple/ mindmark
+```
+
+### Publish to PyPI
+
+```bash
 python -m build
 python -m twine upload dist/*
-# then anyone can run:
+```
+
+Twine will prompt for your API token (use `__token__` as the username). After uploading, anyone can install with:
+
+```bash
 pipx install mindmark
 ```
 
-### C. Single-file standalone executable (no Python required)
+### Alternative distribution methods
+
+<details>
+<summary>GitHub release + pipx</summary>
+
+```bash
+python -m build
+gh release create v0.1.0 dist/*
+
+# Users install:
+pipx install https://github.com/sukanth/mindmark/releases/download/v0.1.0/mindmark-0.1.0-py3-none-any.whl
+```
+</details>
+
+<details>
+<summary>Standalone executable (no Python required)</summary>
 
 ```bash
 pip install pyinstaller
 pyinstaller --onefile -n mindmark -p src src/mindmark/__main__.py
-# dist/mindmark.exe  (Windows)  or  dist/mindmark  (macOS/Linux)
+# dist/mindmark (macOS/Linux) or dist/mindmark.exe (Windows)
 ```
 
-Ship the resulting binary in a GitHub release. First launch still needs internet to download the ONNX model (or pre-bundle the model directory under `~/.cache/fastembed`).
+Ship the binary in a GitHub release. First launch still downloads the ONNX model (~130 MB).
+</details>
 
-### D. Docker (for servers / teammates without local Python)
+<details>
+<summary>Docker</summary>
 
 ```dockerfile
 FROM python:3.11-slim
@@ -184,11 +207,7 @@ docker run --rm -v $HOME/.mindmark:/root/.mindmark \
     -v $HOME/Downloads:/downloads mindmark \
     index /downloads/bookmarks.html
 ```
-
-### E. Internal Microsoft distribution
-
-- Publish the wheel to an internal Azure Artifacts feed, then `pipx install mindmark --index-url <feed>`.
-- Or check `dist/*.whl` into an internal repo and point colleagues at `pipx install <url-to-wheel>`.
+</details>
 
 ---
 
