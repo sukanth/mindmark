@@ -1,70 +1,147 @@
-# mindmark
+<div align="center">
 
-> **Your bookmarks, finally searchable.** Ask in natural language; mindmark remembers what you saved.
+# 🔖 mindmark
 
-**100% local.** No cloud, no API keys, nothing leaves your machine. Embeddings run on-device via [fastembed](https://github.com/qdrant/fastembed) (ONNX, ~130 MB one-time model download).
+**Your bookmarks, finally searchable.**\
+Ask in natural language — mindmark remembers what you saved.
 
-<p align="center">
-  <img src="assets/mindmark-hero.gif" alt="mindmark demo" width="800" />
-</p>
+[![PyPI](https://img.shields.io/pypi/v/mindmark?color=blue&label=PyPI)](https://pypi.org/project/mindmark/)
+[![Python](https://img.shields.io/pypi/pyversions/mindmark)](https://pypi.org/project/mindmark/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/sukanth/mindmark/actions/workflows/ci.yml/badge.svg)](https://github.com/sukanth/mindmark/actions/workflows/ci.yml)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)]()
 
----
+100% local · No cloud · No API keys · Nothing leaves your machine
 
-## What it does
+<img src="assets/mindmark-hero.gif" alt="mindmark demo" width="800" />
 
-- **`mindmark index <file>`** — parse an exported Netscape bookmarks HTML file, embed every bookmark locally, and store vectors in SQLite.
-- **`mindmark find "natural-language query"`** — semantic search over titles, folder paths, domains, and URL slugs. Returns top-K with cosine-similarity scores.
-- **`mindmark open "query"`** — open the top result in your default browser.
-- **`mindmark stats`** — show index size, model used, top domains, and top folders.
-
-Works offline after the first index run (model cached locally by fastembed).
+</div>
 
 ---
 
-## Install
+## Table of Contents
 
-Requires **Python 3.9+**.
+- [Features](#-features)
+- [Prerequisites](#-prerequisites)
+- [Install](#-install)
+- [Quick Start](#-quick-start)
+- [Usage](#-usage)
+- [How It Works](#-how-it-works)
+- [Storage Layout](#-storage-layout)
+- [Uninstall](#-uninstall)
+- [Development](#-development)
+- [License](#-license)
 
-### Option 1 — pipx (recommended, isolated + globally on PATH)
+---
+
+## ✨ Features
+
+| Command | What it does |
+|---|---|
+| `mindmark index <file>` | Parse an exported bookmarks HTML file, embed every bookmark locally, store vectors in SQLite |
+| `mindmark find "query"` | Semantic search over titles, folders, domains, and URL slugs — returns top-K with similarity scores |
+| `mindmark open "query"` | Search and open the best match in your default browser |
+| `mindmark stats` | Show index size, model info, top domains, and top folders |
+
+> 🔌 **Works offline** after the first run. Embeddings run on-device via [fastembed](https://github.com/qdrant/fastembed) (ONNX Runtime, ~130 MB one-time model download).
+
+---
+
+## 📋 Prerequisites
+
+| Requirement | Details |
+|---|---|
+| **Python 3.9+** | [python.org/downloads](https://www.python.org/downloads/) — on Windows, check **"Add Python to PATH"** during setup |
+| **pip** | Bundled with Python — verify with `pip --version` or `pip3 --version` |
+| **Internet** | Needed only once to download the embedding model (~130 MB). Everything after that is offline |
+
+<details>
+<summary>💡 <strong>Windows tip — Python PATH</strong></summary>
+
+If you installed Python from the **Microsoft Store**, `python` and `pip` are already on your PATH.\
+If you installed from **python.org**, make sure you checked **"Add Python to PATH"** during setup.
+</details>
+
+---
+
+## 📦 Install
+
+### Recommended — pipx (isolated + globally on PATH)
 
 ```bash
 pipx install mindmark
 ```
 
-### Option 2 — regular pip / venv
+<details>
+<summary>Don't have pipx?</summary>
 
 ```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
-pip install .
+pip install --user pipx && pipx ensurepath    # then restart your terminal
 ```
 
-### Option 3 — editable install for development
+Or on macOS with Homebrew: `brew install pipx`
+</details>
+
+<details>
+<summary>Alternative — pip with a virtual environment</summary>
+
+**macOS / Linux:**
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install mindmark
+```
+
+**Windows (PowerShell):**
+
+```powershell
+python -m venv .venv; .venv\Scripts\Activate.ps1
+pip install mindmark
+```
+
+**Windows (Command Prompt):**
+
+```cmd
+python -m venv .venv && .venv\Scripts\activate.bat
+pip install mindmark
+```
+</details>
+
+<details>
+<summary>Editable install for development</summary>
+
+```bash
+git clone https://github.com/sukanth/mindmark.git
+cd mindmark
 pip install -e .[dev]
 ```
+</details>
 
 ---
 
-## Quick start
+## ⚡ Quick Start
 
-### 1. Export your bookmarks
+### 1️⃣ Export your bookmarks
 
-- **Edge** — `edge://favorites` → `⋯` → **Export favorites** → save HTML
-- **Chrome** — `chrome://bookmarks` → `⋮` → **Export bookmarks** → save HTML
-- **Firefox** — `Ctrl+Shift+O` → **Import and Backup** → **Export Bookmarks to HTML**
+| Browser | How |
+|---|---|
+| **Edge** | `edge://favorites` → `⋯` → **Export favorites** → save as HTML |
+| **Chrome** | `chrome://bookmarks` → `⋮` → **Export bookmarks** → save as HTML |
+| **Firefox** | `Ctrl+Shift+O` (`Cmd+Shift+O` on macOS) → **Import and Backup** → **Export Bookmarks to HTML** |
 
-### 2. Build the index
+### 2️⃣ Build the index
 
 ```bash
+# macOS / Linux
 mindmark index ~/Downloads/bookmarks.html
+
+# Windows (PowerShell)
+mindmark index "$env:USERPROFILE\Downloads\bookmarks.html"
 ```
 
-First run downloads the embedding model (~130 MB) to `~/.cache/fastembed` (or `%LOCALAPPDATA%\fastembed` on Windows). Subsequent runs are offline.
+> First run downloads the embedding model (~130 MB) and caches it locally. Every run after that is instant and fully offline.
 
-### 3. Search in natural language
+### 3️⃣ Search in natural language
 
 <p align="center">
   <img src="assets/mindmark-find.gif" alt="mindmark find demo" width="800" />
@@ -77,85 +154,164 @@ mindmark find "helm chart examples" --domain github.com
 mindmark find "docker compose setup" --folder devops
 ```
 
-### 4. Open a result directly
+### 4️⃣ Open a result directly
 
 ```bash
 mindmark open "k8s cheat sheet"           # opens the best match
 mindmark find "docker setup" --open 2     # opens result #2 from the list
 ```
 
-Tip: alias it to something even shorter.
+<details>
+<summary>💡 <strong>Tip — create a short alias</strong></summary>
+
+**macOS / Linux** — add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 alias mm='mindmark open'
 mm "docker setup"
 ```
 
-### 5. JSON for scripting / fzf / Alfred / Raycast
+**Windows** — add to your PowerShell `$PROFILE`:
+
+```powershell
+Set-Alias mm mindmark
+mm open "docker setup"
+```
+</details>
+
+### 5️⃣ JSON output for scripting
+
+Pipe results into **fzf**, **jq**, **Alfred**, **Raycast**, **PowerToys Run**, or any tool that accepts JSON:
 
 ```bash
+# macOS / Linux
 mindmark find "istio service mesh" --json | jq '.[].url'
+
+# Windows (PowerShell)
+mindmark find "istio service mesh" --json | ConvertFrom-Json | ForEach-Object { $_.url }
 ```
 
 ---
 
-## Re-indexing
+## 📖 Usage
 
-Just rerun `mindmark index <file>`. It clears and rebuilds the `bookmarks` table. The model download is cached, so re-indexing 800 bookmarks takes seconds after the first time.
+### Filters
 
-## Storage layout
-
-| What | Where | Notes |
-|---|---|---|
-| SQLite index | `~/.mindmark/index.db` | override with `--db` or `MINDMARK_DB` |
-| Alternate home dir | `~/.mindmark/` | override with `MINDMARK_HOME` |
-| Embedding model | `~/.cache/fastembed/` | managed by fastembed |
-
-## Filters
-
-- `--domain github.com` — only results whose domain contains `github.com`
-- `--folder work/kusto` — only results inside folder paths containing `work/kusto`
-- `-k 20` — return top 20 instead of top 10
-
-## Swap the embedding model
+Narrow down results without changing your query:
 
 ```bash
-mindmark index bookmarks.html --model BAAI/bge-small-en-v1.5       # default, 384-dim
+mindmark find "useful tools" --domain github.com     # only github.com results
+mindmark find "useful tools" --folder work/kusto      # only bookmarks in matching folders
+mindmark find "useful tools" -k 20                    # return top 20 instead of 10
+```
+
+### Re-indexing
+
+Just rerun `mindmark index <file>`. It clears and rebuilds the index. The model is cached, so re-indexing 800+ bookmarks takes only seconds.
+
+### Swap the embedding model
+
+```bash
+mindmark index bookmarks.html --model BAAI/bge-small-en-v1.5              # default, 384-dim
 mindmark index bookmarks.html --model sentence-transformers/all-MiniLM-L6-v2
-mindmark index bookmarks.html --model BAAI/bge-base-en-v1.5        # 768-dim, higher quality, slower
+mindmark index bookmarks.html --model BAAI/bge-base-en-v1.5               # 768-dim, higher quality
 ```
 
 Switching models triggers a full re-embed automatically. See the [fastembed supported models list](https://qdrant.github.io/fastembed/examples/Supported_Models/).
 
 ---
 
-## How it works
+## 🧠 How It Works
 
-1. **Parse** — a small stateful tokenizer reads the Netscape bookmarks HTML and extracts every `<A>` with its ancestor `<H3>` folder stack, so each bookmark knows its full folder path.
-2. **Embed** — each bookmark becomes the string `title | folder: Dev/Tools | domain: github.com | path: docs setup guide` and is passed through a BGE/MiniLM ONNX model. Vectors are L2-normalized so cosine similarity = dot product.
-3. **Store** — vectors live as `float32` BLOBs in a single SQLite file. For 800–10,000 bookmarks this is dramatically simpler than a vector DB and still sub-millisecond.
-4. **Search** — encode the query, take the dot product against all vectors, return the top-K.
+```
+Bookmarks HTML                                  "python async tutorial"
+      │                                                  │
+      ▼                                                  ▼
+  ┌────────┐    ┌──────────┐    ┌──────────┐     ┌──────────┐
+  │ Parse  │───▶│  Embed   │───▶│  Store   │     │  Embed   │
+  │  HTML  │    │ (ONNX)   │    │ (SQLite) │◀────│  query   │
+  └────────┘    └──────────┘    └──────────┘     └──────────┘
+                                      │                │
+                                      ▼                ▼
+                                ┌──────────────────────────┐
+                                │  Dot-product similarity  │
+                                │   → top-K results        │
+                                └──────────────────────────┘
+```
+
+1. **Parse** — A stateful tokenizer reads the Netscape bookmarks HTML and extracts every link with its full folder path.
+2. **Embed** — Each bookmark becomes a rich text string (`title | folder | domain | path`) and is passed through a BGE/MiniLM ONNX model. Vectors are L2-normalized.
+3. **Store** — Vectors live as `float32` blobs in a single SQLite file. For 800–10,000 bookmarks this is simpler than a vector DB and still sub-millisecond.
+4. **Search** — Encode the query, compute dot products against all vectors, return the top-K.
 
 ---
 
-## Publishing to PyPI
+## 🗂️ Storage Layout
+
+| What | macOS / Linux | Windows | Override |
+|---|---|---|---|
+| Index database | `~/.mindmark/index.db` | `%LOCALAPPDATA%\mindmark\index.db` | `--db` flag or `MINDMARK_DB` env var |
+| Home directory | `~/.mindmark/` | `%LOCALAPPDATA%\mindmark\` | `MINDMARK_HOME` env var |
+| Embedding model | `~/.cache/fastembed/` | `%LOCALAPPDATA%\fastembed\` | Managed by fastembed |
+
+---
+
+## 🗑️ Uninstall
+
+```bash
+pipx uninstall mindmark    # if installed with pipx
+pip uninstall mindmark      # if installed with pip
+```
+
+<details>
+<summary>Remove stored data (optional)</summary>
+
+The index and cached model are stored outside the package:
+
+**macOS / Linux:**
+
+```bash
+rm -rf ~/.mindmark              # index database
+rm -rf ~/.cache/fastembed        # cached embedding model (~130 MB)
+```
+
+**Windows (PowerShell):**
+
+```powershell
+Remove-Item -Recurse "$env:LOCALAPPDATA\mindmark"     # index database
+Remove-Item -Recurse "$env:LOCALAPPDATA\fastembed"     # cached embedding model
+```
+
+> If you set a custom `MINDMARK_HOME`, remove that directory instead.
+</details>
+
+---
+
+## 🛠️ Development
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for full details.
+
+```bash
+git clone https://github.com/sukanth/mindmark.git
+cd mindmark
+pip install -e .[dev]
+pytest -q
+```
+
+<details>
+<summary>Publishing to PyPI</summary>
 
 ### First-time setup
 
 1. Create an account at [pypi.org](https://pypi.org/account/register/)
 2. Generate an API token at [pypi.org/manage/account/token/](https://pypi.org/manage/account/token/)
-3. Install the build tools:
-
-```bash
-pip install build twine
-```
+3. Install build tools: `pip install build twine`
 
 ### Test on TestPyPI first (recommended)
 
 ```bash
 python -m build
 python -m twine upload --repository testpypi dist/*
-# verify it works:
 pipx install --index-url https://test.pypi.org/simple/ mindmark
 ```
 
@@ -166,40 +322,30 @@ python -m build
 python -m twine upload dist/*
 ```
 
-Twine will prompt for your API token (use `__token__` as the username). After uploading, anyone can install with:
-
-```bash
-pipx install mindmark
-```
-
-### Alternative distribution methods
+Use `__token__` as the username when prompted.
+</details>
 
 <details>
-<summary>GitHub release + pipx</summary>
+<summary>Alternative distribution methods</summary>
+
+### GitHub release
 
 ```bash
 python -m build
 gh release create v0.1.0 dist/*
-
 # Users install:
 pipx install https://github.com/sukanth/mindmark/releases/download/v0.1.0/mindmark-0.1.0-py3-none-any.whl
 ```
-</details>
 
-<details>
-<summary>Standalone executable (no Python required)</summary>
+### Standalone executable (no Python required)
 
 ```bash
 pip install pyinstaller
 pyinstaller --onefile -n mindmark -p src src/mindmark/__main__.py
-# dist/mindmark (macOS/Linux) or dist/mindmark.exe (Windows)
+# Creates: dist/mindmark (macOS/Linux) or dist/mindmark.exe (Windows)
 ```
 
-Ship the binary in a GitHub release. First launch still downloads the ONNX model (~130 MB).
-</details>
-
-<details>
-<summary>Docker</summary>
+### Docker
 
 ```dockerfile
 FROM python:3.11-slim
@@ -219,17 +365,6 @@ docker run --rm -v $HOME/.mindmark:/root/.mindmark \
 
 ---
 
-## Contributing
-
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and guidelines.
-
-## Tests
-
-```bash
-pip install -e .[dev]
-pytest -q
-```
-
-## License
+## 📄 License
 
 MIT — see [LICENSE](LICENSE).

@@ -14,7 +14,15 @@ DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 def default_db_path() -> Path:
-    base = Path(os.environ.get("MINDMARK_HOME", Path.home() / ".mindmark"))
+    env = os.environ.get("MINDMARK_HOME")
+    if env:
+        base = Path(env)
+    elif os.name == "nt":
+        # On Windows, use %LOCALAPPDATA%\mindmark (dotfolders are unusual)
+        local = os.environ.get("LOCALAPPDATA")
+        base = Path(local) / "mindmark" if local else Path.home() / ".mindmark"
+    else:
+        base = Path.home() / ".mindmark"
     base.mkdir(parents=True, exist_ok=True)
     return base / "index.db"
 
