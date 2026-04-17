@@ -67,4 +67,4 @@ src/mindmark/
 
 ## Questions?
 
-Open an [issue](https://github.com/sukanth/mindmark/issues) or reach out via an issue. We're happy to help!
+Open an [issue](https://github.com/sukanth/mindmark/issues) and we're happy to help!
