@@ -4,6 +4,10 @@
 
 **100% local.** No cloud, no API keys, nothing leaves your machine. Embeddings run on-device via [fastembed](https://github.com/qdrant/fastembed) (ONNX, ~130 MB one-time model download).
 
+<p align="center">
+  <img src="assets/mindmark-hero.gif" alt="mindmark demo" width="800" />
+</p>
+
 ---
 
 ## What it does
@@ -61,6 +65,10 @@ mindmark index ~/Downloads/bookmarks.html
 First run downloads the embedding model (~130 MB) to `~/.cache/fastembed` (or `%LOCALAPPDATA%\fastembed` on Windows). Subsequent runs are offline.
 
 ### 3. Search in natural language
+
+<p align="center">
+  <img src="assets/mindmark-find.gif" alt="mindmark find demo" width="800" />
+</p>
 
 ```bash
 mindmark find "python async tutorial"
