@@ -211,6 +211,10 @@ docker run --rm -v $HOME/.mindmark:/root/.mindmark \
 
 ---
 
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and guidelines.
+
 ## Tests
 
 ```bash
@@ -220,4 +224,4 @@ pytest -q
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
