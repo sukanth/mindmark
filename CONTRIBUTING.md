@@ -9,7 +9,7 @@ git clone https://github.com/sukanth/mindmark.git
 cd mindmark
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e .[dev]
+python -m pip install -e ".[dev]"
 ```
 
 ## Running tests
@@ -58,12 +58,13 @@ Fix folder filter case sensitivity
 
 ```
 src/mindmark/
+├── __init__.py     # Package initialisation
+├── __main__.py     # Entry point for `python -m mindmark`
 ├── cli.py          # CLI entry point (argparse)
-├── indexer.py      # Bookmark parser + embedding
-├── searcher.py     # Vector search logic
-└── store.py        # SQLite storage layer
+├── index.py        # Indexing logic
+└── parser.py       # Bookmark / document parser
 ```
 
 ## Questions?
 
-Open a [discussion](https://github.com/sukanth/mindmark/issues) or reach out via an issue. We're happy to help!
+Open an [issue](https://github.com/sukanth/mindmark/issues) or reach out via an issue. We're happy to help!
