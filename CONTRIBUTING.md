@@ -4,11 +4,33 @@ Thanks for your interest in contributing! This guide will help you get started.
 
 ## Development setup
 
+**macOS / Linux:**
+
 ```bash
 git clone https://github.com/sukanth/mindmark.git
 cd mindmark
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/sukanth/mindmark.git
+cd mindmark
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+```
+
+**Windows (Command Prompt):**
+
+```cmd
+git clone https://github.com/sukanth/mindmark.git
+cd mindmark
+python -m venv .venv
+.venv\Scripts\activate.bat
 python -m pip install -e ".[dev]"
 ```
 
