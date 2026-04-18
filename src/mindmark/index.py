@@ -162,6 +162,10 @@ class Index:
         self.con = _connect(self.db_path)
         self.embedder = Embedder(model_name=model_name)
 
+    def close(self) -> None:
+        """Close the underlying database connection."""
+        self.con.close()
+
     def is_empty(self) -> bool:
         cur = self.con.cursor()
         cur.execute("SELECT COUNT(*) FROM bookmarks")
