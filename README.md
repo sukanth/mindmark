@@ -38,12 +38,24 @@ Ask in natural language — mindmark remembers what you saved.
 
 | Command | What it does |
 |---|---|
-| `mindmark index <file>` | Parse an exported bookmarks HTML file, embed every bookmark locally, store vectors in SQLite |
+| `mindmark sync` | **Auto-detect** installed browsers and sync bookmarks directly — no export needed |
 | `mindmark find "query"` | Semantic search over titles, folders, domains, and URL slugs — returns top-K with similarity scores |
 | `mindmark open "query"` | Search and open the best match in your default browser |
 | `mindmark stats` | Show index size, model info, top domains, and top folders |
+| `mindmark index <file>` | Import bookmarks from an exported HTML file (legacy workflow) |
 
 > 🔌 **Works offline** after the first run. Embeddings run on-device via [fastembed](https://github.com/qdrant/fastembed) (ONNX Runtime, ~130 MB one-time model download).
+
+### Supported Browsers
+
+| Browser | macOS | Linux | Windows |
+|---|---|---|---|
+| **Chrome** | ✅ | ✅ | ✅ |
+| **Edge** | ✅ | ✅ | ✅ |
+| **Brave** | ✅ | ✅ | ✅ |
+| **Firefox** | ✅ | ✅ | ✅ |
+
+mindmark reads bookmark files directly from browser data directories — no export step, no browser extension.
 
 ---
 
@@ -121,15 +133,57 @@ pip install -e .[dev]
 
 ## ⚡ Quick Start
 
-### 1️⃣ Export your bookmarks
+### 1️⃣ Sync your bookmarks (no export needed!)
 
-| Browser | How |
+```bash
+mindmark sync
+```
+
+That's it — mindmark auto-detects your installed browsers, reads their bookmark files directly, and builds a searchable index. **No manual export required.**
+
+> First run downloads the embedding model (~130 MB) and caches it locally. Every run after that is instant and fully offline.
+
+<details>
+<summary>💡 <strong>See which browsers were detected</strong></summary>
+
+```bash
+mindmark sync --list-browsers
+```
+
+Example output:
+
+```
+Browser      Profile                  Path
+-------      -------                  ----
+Chrome       Default                  ~/Library/.../Google/Chrome/Default/Bookmarks
+Chrome       Profile 3                ~/Library/.../Google/Chrome/Profile 3/Bookmarks
+Edge         Default                  ~/Library/.../Microsoft Edge/Default/Bookmarks
+```
+
+</details>
+
+<details>
+<summary>💡 <strong>Sync a specific browser only</strong></summary>
+
+```bash
+mindmark sync --browser chrome
+mindmark sync --browser firefox
+mindmark sync --browser edge
+mindmark sync --browser brave
+```
+
+</details>
+
+<details>
+<summary>💡 <strong>Alternative — import from an exported HTML file</strong></summary>
+
+If you prefer the manual export workflow, or need to import bookmarks from an unsupported browser:
+
+| Browser | How to export |
 |---|---|
 | **Edge** | `edge://favorites` → `⋯` → **Export favorites** → save as HTML |
 | **Chrome** | `chrome://bookmarks` → `⋮` → **Export bookmarks** → save as HTML |
 | **Firefox** | `Ctrl+Shift+O` (`Cmd+Shift+O` on macOS) → **Import and Backup** → **Export Bookmarks to HTML** |
-
-### 2️⃣ Build the index
 
 ```bash
 # macOS / Linux
@@ -139,9 +193,9 @@ mindmark index ~/Downloads/bookmarks.html
 mindmark index "$env:USERPROFILE\Downloads\bookmarks.html"
 ```
 
-> First run downloads the embedding model (~130 MB) and caches it locally. Every run after that is instant and fully offline.
+</details>
 
-### 3️⃣ Search in natural language
+### 2️⃣ Search in natural language
 
 <p align="center">
   <img src="assets/mindmark-find.gif" alt="mindmark find demo" width="800" />
@@ -154,7 +208,7 @@ mindmark find "helm chart examples" --domain github.com
 mindmark find "docker compose setup" --folder devops
 ```
 
-### 4️⃣ Open a result directly
+### 3️⃣ Open a result directly
 
 ```bash
 mindmark open "k8s cheat sheet"           # opens the best match
@@ -179,7 +233,7 @@ mm open "docker setup"
 ```
 </details>
 
-### 5️⃣ JSON output for scripting
+### 4️⃣ JSON output for scripting
 
 Pipe results into **fzf**, **jq**, **Alfred**, **Raycast**, **PowerToys Run**, or any tool that accepts JSON:
 
@@ -195,6 +249,21 @@ mindmark find "istio service mesh" --json | ConvertFrom-Json | ForEach-Object { 
 
 ## 📖 Usage
 
+### Syncing
+
+`mindmark sync` reads bookmarks directly from your browser data directories. It's **incremental** — only new or changed bookmarks are re-embedded, making re-syncs near-instant.
+
+```bash
+mindmark sync                         # sync all detected browsers
+mindmark sync --browser chrome        # sync only Chrome
+mindmark sync --browser firefox       # sync only Firefox
+mindmark sync --list-browsers         # list detected browsers and profiles
+```
+
+When you add new bookmarks in your browser, just run `mindmark sync` again — it will pick up only the changes.
+
+> 💡 **Note:** If you change the embedding model with `--model`, all bookmarks will be re-embedded on the next sync. Browser names are case-insensitive (e.g., `--browser Chrome` and `--browser chrome` both work).
+
 ### Filters
 
 Narrow down results without changing your query:
@@ -207,42 +276,47 @@ mindmark find "useful tools" -k 20                    # return top 20 instead of
 
 ### Re-indexing
 
-Just rerun `mindmark index <file>`. It clears and rebuilds the index. The model is cached, so re-indexing 800+ bookmarks takes only seconds.
+For the `sync` workflow, just rerun `mindmark sync`. It's incremental — only changed bookmarks are re-embedded.
+
+For the `index` workflow, rerun `mindmark index <file>`. It clears and rebuilds the index. The model is cached, so re-indexing 800+ bookmarks takes only seconds.
 
 ### Swap the embedding model
 
 ```bash
-mindmark index bookmarks.html --model BAAI/bge-small-en-v1.5              # default, 384-dim
-mindmark index bookmarks.html --model sentence-transformers/all-MiniLM-L6-v2
-mindmark index bookmarks.html --model BAAI/bge-base-en-v1.5               # 768-dim, higher quality
+mindmark sync --model BAAI/bge-small-en-v1.5                # default, 384-dim
+mindmark sync --model sentence-transformers/all-MiniLM-L6-v2
+mindmark sync --model BAAI/bge-base-en-v1.5                 # 768-dim, higher quality
 ```
 
-Switching models triggers a full re-embed automatically. See the [fastembed supported models list](https://qdrant.github.io/fastembed/examples/Supported_Models/).
+The `--model` flag also works with `mindmark index`. Switching models triggers a full re-embed automatically. See the [fastembed supported models list](https://qdrant.github.io/fastembed/examples/Supported_Models/).
 
 ---
 
 ## 🧠 How It Works
 
 ```
-Bookmarks HTML                                  "python async tutorial"
-      │                                                  │
-      ▼                                                  ▼
-  ┌────────┐    ┌──────────┐    ┌──────────┐     ┌──────────┐
-  │ Parse  │───▶│  Embed   │───▶│  Store   │     │  Embed   │
-  │  HTML  │    │ (ONNX)   │    │ (SQLite) │◀────│  query   │
-  └────────┘    └──────────┘    └──────────┘     └──────────┘
-                                      │                │
-                                      ▼                ▼
-                                ┌──────────────────────────┐
-                                │  Dot-product similarity  │
-                                │   → top-K results        │
+Browser data files                              "python async tutorial"
+(Chrome JSON / Firefox SQLite)                            │
+       │                                                  │
+       ▼                                                  ▼
+  ┌────────────┐  ┌──────────┐  ┌──────────┐     ┌──────────┐
+  │  Detect &  │─▶│  Embed   │─▶│  Store   │     │  Embed   │
+  │   Parse    │  │ (ONNX)   │  │ (SQLite) │◀────│  query   │
+  └────────────┘  └──────────┘  └──────────┘     └──────────┘
+                      ▲               │                │
+                      │               ▼                ▼
+                 only new/      ┌──────────────────────────┐
+                 changed        │  Dot-product similarity  │
+                 bookmarks      │   → top-K results        │
                                 └──────────────────────────┘
 ```
 
-1. **Parse** — A stateful tokenizer reads the Netscape bookmarks HTML and extracts every link with its full folder path.
-2. **Embed** — Each bookmark becomes a rich text string (`title | folder | domain | path`) and is passed through a BGE/MiniLM ONNX model. Vectors are L2-normalized.
-3. **Store** — Vectors live as `float32` blobs in a single SQLite file. For 800–10,000 bookmarks this is simpler than a vector DB and still sub-millisecond.
-4. **Search** — Encode the query, compute dot products against all vectors, return the top-K.
+1. **Detect** — Auto-discover installed browsers (Chrome, Edge, Brave, Firefox) and their profiles across macOS, Linux, and Windows.
+2. **Parse** — Read bookmark files natively: Chromium JSON format or Firefox `places.sqlite`. No export step needed.
+3. **Diff** — Hash each bookmark's content and compare against the existing index. Only new or changed bookmarks proceed to embedding.
+4. **Embed** — Each bookmark becomes a rich text string (`title | folder | domain | path`) and is passed through a BGE/MiniLM ONNX model. Vectors are L2-normalized.
+5. **Store** — Vectors live as `float32` blobs in a single SQLite file. A `bookmark_sources` table tracks which browser contributed each bookmark, so multi-browser syncs don't conflict.
+6. **Search** — Encode the query, compute dot products against all vectors, return the top-K.
 
 ---
 
@@ -357,6 +431,15 @@ ENTRYPOINT ["mindmark"]
 
 ```bash
 docker build -t mindmark .
+
+# Sync from browser bookmarks (mount browser data directories)
+# Note: browser data paths vary — this example is for macOS Chrome
+docker run --rm \
+    -v $HOME/.mindmark:/root/.mindmark \
+    -v "$HOME/Library/Application Support/Google/Chrome":/chrome:ro \
+    mindmark sync
+
+# Or import from an exported HTML file
 docker run --rm -v $HOME/.mindmark:/root/.mindmark \
     -v $HOME/Downloads:/downloads mindmark \
     index /downloads/bookmarks.html

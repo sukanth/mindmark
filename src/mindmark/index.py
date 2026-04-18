@@ -1,6 +1,7 @@
 """Embedding + SQLite-backed vector index for bookmarks."""
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ import numpy as np
 from .parser import Bookmark
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
+
+_SCHEMA_VERSION = 2
 
 
 def default_db_path() -> Path:
@@ -41,7 +44,14 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     add_date INTEGER NOT NULL,
     icon TEXT,
     embedding BLOB NOT NULL,
-    dim INTEGER NOT NULL
+    dim INTEGER NOT NULL,
+    content_hash TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS bookmark_sources (
+    url TEXT NOT NULL,
+    source TEXT NOT NULL,
+    content_hash TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (url, source)
 );
 CREATE INDEX IF NOT EXISTS idx_bookmarks_domain ON bookmarks(domain);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_folder ON bookmarks(folder_path);
@@ -51,7 +61,38 @@ CREATE INDEX IF NOT EXISTS idx_bookmarks_folder ON bookmarks(folder_path);
 def _connect(db_path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(db_path)
     con.executescript(_SCHEMA)
+    _migrate(con)
     return con
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """Run schema migrations for existing databases."""
+    cur = con.cursor()
+    cur.execute("SELECT value FROM meta WHERE key = 'schema_version'")
+    row = cur.fetchone()
+    version = int(row[0]) if row else 1
+
+    if version < 2:
+        # Add content_hash column if missing (pre-v2 databases)
+        cols = {r[1] for r in cur.execute("PRAGMA table_info(bookmarks)")}
+        if "content_hash" not in cols:
+            cur.execute(
+                "ALTER TABLE bookmarks ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
+            )
+        # Create bookmark_sources table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bookmark_sources (
+                url TEXT NOT NULL,
+                source TEXT NOT NULL,
+                content_hash TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (url, source)
+            )
+        """)
+        cur.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+            (str(_SCHEMA_VERSION),),
+        )
+        con.commit()
 
 
 def _vec_to_blob(v: np.ndarray) -> bytes:
@@ -88,6 +129,32 @@ class Embedder:
         return self.embed([text])[0]
 
 
+def _content_hash(b: Bookmark) -> str:
+    """Hash the fields that affect embedding text."""
+    payload = f"{b.url}\0{b.title}\0{b.folder_path}\0{b.domain}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+@dataclass
+class SyncResult:
+    """Result of an incremental sync operation."""
+    added: int = 0
+    updated: int = 0
+    removed: int = 0
+    unchanged: int = 0
+    source: str = ""
+
+    @property
+    def total_changed(self) -> int:
+        return self.added + self.updated + self.removed
+
+    def __str__(self) -> str:
+        return (
+            f"{self.added} new, {self.updated} updated, "
+            f"{self.removed} removed, {self.unchanged} unchanged"
+        )
+
+
 class Index:
     def __init__(self, db_path: Path | None = None, model_name: str = DEFAULT_MODEL):
         self.db_path = Path(db_path) if db_path else default_db_path()
@@ -95,9 +162,193 @@ class Index:
         self.con = _connect(self.db_path)
         self.embedder = Embedder(model_name=model_name)
 
+    def close(self) -> None:
+        """Close the underlying database connection."""
+        self.con.close()
+
+    def is_empty(self) -> bool:
+        cur = self.con.cursor()
+        cur.execute("SELECT COUNT(*) FROM bookmarks")
+        return cur.fetchone()[0] == 0
+
+    def _model_changed(self) -> bool:
+        """Check if the stored model differs from the current one."""
+        cur = self.con.cursor()
+        cur.execute("SELECT value FROM meta WHERE key = 'model'")
+        row = cur.fetchone()
+        if row is None:
+            return False  # no model stored yet
+        return row[0] != self.model_name
+
+    def sync(
+        self,
+        bookmarks: list[Bookmark],
+        source: str = "html",
+        batch_size: int = 64,
+    ) -> SyncResult:
+        """Incrementally sync bookmarks from a source.
+
+        Only embeds new/changed bookmarks.  Bookmarks removed from *this*
+        source are deleted from the index only if no other source
+        references them.
+        """
+        result = SyncResult(source=source)
+
+        if not bookmarks:
+            # Delete all bookmarks from this source
+            removed_urls = self._remove_source(source)
+            result.removed = len(removed_urls)
+            return result
+
+        # If the embedding model changed, force full re-embed
+        force_reembed = self._model_changed()
+
+        # 1. Hash incoming bookmarks
+        new_map: dict[str, tuple[Bookmark, str]] = {}
+        for b in bookmarks:
+            h = _content_hash(b)
+            if b.url not in new_map:  # dedup by URL
+                new_map[b.url] = (b, h)
+
+        # 2. Load existing hashes for this source
+        cur = self.con.cursor()
+        cur.execute(
+            "SELECT url, content_hash FROM bookmark_sources WHERE source = ?",
+            (source,),
+        )
+        existing: dict[str, str] = {r[0]: r[1] for r in cur.fetchall()}
+
+        # 3. Compute diff
+        new_urls = set(new_map.keys())
+        old_urls = set(existing.keys())
+
+        to_add_urls = new_urls - old_urls
+        to_delete_urls = old_urls - new_urls
+        common_urls = new_urls & old_urls
+
+        to_update_urls: set[str] = set()
+        for url in common_urls:
+            _, new_hash = new_map[url]
+            if force_reembed or new_hash != existing[url]:
+                to_update_urls.add(url)
+
+        result.unchanged = len(common_urls) - len(to_update_urls)
+        result.added = len(to_add_urls)
+        result.updated = len(to_update_urls)
+
+        # 4. Embed only what changed
+        to_embed_urls = to_add_urls | to_update_urls
+        embed_list = [new_map[u] for u in to_embed_urls]
+
+        embedded: dict[str, tuple[Bookmark, str, bytes, int]] = {}
+        for start in range(0, len(embed_list), batch_size):
+            chunk = embed_list[start:start + batch_size]
+            texts = [b.embedding_text() for b, _h in chunk]
+            vecs = self.embedder.embed(texts)
+            for (b, h), v in zip(chunk, vecs):
+                embedded[b.url] = (b, h, _vec_to_blob(v), int(v.shape[0]))
+
+        # 5. Apply all DB changes in a single transaction
+        cur = self.con.cursor()
+        try:
+            # Update model metadata
+            cur.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('model', ?)",
+                (self.model_name,),
+            )
+
+            # Insert/update bookmarks and sources
+            for url in to_add_urls:
+                b, h, vec_blob, dim = embedded[url]
+                # Check if URL exists from another source
+                cur.execute("SELECT 1 FROM bookmarks WHERE url = ?", (url,))
+                if cur.fetchone():
+                    # URL already indexed by another source — update metadata
+                    cur.execute(
+                        "UPDATE bookmarks SET title=?, folder_path=?, domain=?, "
+                        "add_date=?, icon=?, embedding=?, dim=?, content_hash=? "
+                        "WHERE url=?",
+                        (b.title, b.folder_path, b.domain, b.add_date,
+                         b.icon, vec_blob, dim, h, url),
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO bookmarks "
+                        "(url, title, folder_path, domain, add_date, icon, "
+                        "embedding, dim, content_hash) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (url, b.title, b.folder_path, b.domain, b.add_date,
+                         b.icon, vec_blob, dim, h),
+                    )
+                cur.execute(
+                    "INSERT OR REPLACE INTO bookmark_sources (url, source, content_hash) "
+                    "VALUES (?, ?, ?)",
+                    (url, source, h),
+                )
+
+            for url in to_update_urls:
+                b, h, vec_blob, dim = embedded[url]
+                cur.execute(
+                    "UPDATE bookmarks SET title=?, folder_path=?, domain=?, "
+                    "add_date=?, icon=?, embedding=?, dim=?, content_hash=? "
+                    "WHERE url=?",
+                    (b.title, b.folder_path, b.domain, b.add_date,
+                     b.icon, vec_blob, dim, h, url),
+                )
+                cur.execute(
+                    "UPDATE bookmark_sources SET content_hash=? "
+                    "WHERE url=? AND source=?",
+                    (h, url, source),
+                )
+
+            # Delete bookmarks removed from this source
+            for url in to_delete_urls:
+                cur.execute(
+                    "DELETE FROM bookmark_sources WHERE url=? AND source=?",
+                    (url, source),
+                )
+                # Only delete from bookmarks if no other source references it
+                cur.execute(
+                    "SELECT COUNT(*) FROM bookmark_sources WHERE url=?", (url,)
+                )
+                if cur.fetchone()[0] == 0:
+                    cur.execute("DELETE FROM bookmarks WHERE url=?", (url,))
+
+            result.removed = len(to_delete_urls)
+            self.con.commit()
+        except Exception:
+            self.con.rollback()
+            raise
+
+        return result
+
+    def _remove_source(self, source: str) -> list[str]:
+        """Remove all bookmarks from a source, cleaning up orphans."""
+        cur = self.con.cursor()
+        cur.execute(
+            "SELECT url FROM bookmark_sources WHERE source = ?", (source,)
+        )
+        urls = [r[0] for r in cur.fetchall()]
+        try:
+            for url in urls:
+                cur.execute(
+                    "DELETE FROM bookmark_sources WHERE url=? AND source=?",
+                    (url, source),
+                )
+                cur.execute(
+                    "SELECT COUNT(*) FROM bookmark_sources WHERE url=?", (url,)
+                )
+                if cur.fetchone()[0] == 0:
+                    cur.execute("DELETE FROM bookmarks WHERE url=?", (url,))
+            self.con.commit()
+        except Exception:
+            self.con.rollback()
+            raise
+        return urls
+
     def rebuild(self, bookmarks: list[Bookmark], batch_size: int = 64) -> dict:
         cur = self.con.cursor()
         cur.execute("DELETE FROM bookmarks")
+        cur.execute("DELETE FROM bookmark_sources")
         cur.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('model', ?)", (self.model_name,))
         self.con.commit()
 
@@ -106,24 +357,32 @@ class Index:
             return {"indexed": 0, "model": self.model_name, "dim": 0}
 
         rows = []
+        source_rows = []
         for start in range(0, total, batch_size):
             chunk = bookmarks[start:start + batch_size]
             texts = [b.embedding_text() for b in chunk]
             vecs = self.embedder.embed(texts)
             for b, v in zip(chunk, vecs):
+                h = _content_hash(b)
                 rows.append((
                     b.url, b.title, b.folder_path, b.domain,
-                    b.add_date, b.icon, _vec_to_blob(v), int(v.shape[0]),
+                    b.add_date, b.icon, _vec_to_blob(v), int(v.shape[0]), h,
                 ))
+                source_rows.append((b.url, "html", h))
 
         cur.executemany(
             "INSERT OR REPLACE INTO bookmarks "
-            "(url, title, folder_path, domain, add_date, icon, embedding, dim) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(url, title, folder_path, domain, add_date, icon, embedding, dim, content_hash) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             rows,
         )
+        cur.executemany(
+            "INSERT OR REPLACE INTO bookmark_sources (url, source, content_hash) "
+            "VALUES (?,?,?)",
+            source_rows,
+        )
         self.con.commit()
-        return {"indexed": total, "model": self.model_name, "dim": rows[0][-1]}
+        return {"indexed": total, "model": self.model_name, "dim": rows[0][-2]}
 
     def stats(self) -> dict:
         cur = self.con.cursor()

@@ -83,8 +83,13 @@ src/mindmark/
 ├── __init__.py     # Package initialisation
 ├── __main__.py     # Entry point for `python -m mindmark`
 ├── cli.py          # CLI entry point (argparse)
-├── index.py        # Indexing logic
-└── parser.py       # Bookmark / document parser
+├── index.py        # Embedding index + incremental sync logic
+├── parser.py       # Netscape HTML bookmark parser
+└── browsers/       # Direct browser bookmark reading
+    ├── __init__.py  # detect + collect bookmarks from all browsers
+    ├── paths.py     # OS-specific browser path resolution
+    ├── chromium.py  # Chrome / Edge / Brave JSON parser
+    └── firefox.py   # Firefox places.sqlite parser
 ```
 
 ## Questions?

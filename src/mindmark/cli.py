@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import __version__
 from .parser import parse_file
-from .index import Index, default_db_path, DEFAULT_MODEL
+from .index import Index, SyncResult, default_db_path, DEFAULT_MODEL
 
 
 def _cmd_index(args):
@@ -28,14 +28,25 @@ def _cmd_index(args):
     return 0
 
 
+def _auto_sync_hint(idx: Index) -> None:
+    """Print a hint when the index is empty."""
+    if not idx.is_empty():
+        return
+    print("index is empty — run 'mindmark sync' to import bookmarks from your browsers,")
+    print("or run 'mindmark index <bookmarks.html>' to import from an exported file.")
+    print()
+
+
 def _cmd_find(args):
     idx = Index(db_path=args.db)
+    if not getattr(args, 'json', False):
+        _auto_sync_hint(idx)
     results = idx.search(
         query=args.query, k=args.top,
         domain=args.domain, folder=args.folder,
     )
     if not results:
-        print("no results (is the index empty? run: mindmark index <path-to-bookmarks.html>)")
+        print("no results (is the index empty? run: mindmark sync)")
         return 1
 
     if args.open is not None:
@@ -79,12 +90,56 @@ def _cmd_stats(args):
 
 def _cmd_open(args):
     idx = Index(db_path=args.db)
+    _auto_sync_hint(idx)
     results = idx.search(args.query, k=1)
     if not results:
         print("no results")
         return 1
     webbrowser.open(results[0]["url"])
     print(f"opened: {results[0]['title']}")
+    return 0
+
+
+def _cmd_sync(args):
+    from .browsers import collect_all_bookmarks, detect_browsers
+
+    if args.list_browsers:
+        profiles = detect_browsers()
+        if not profiles:
+            print("no supported browsers detected")
+            return 1
+        print(f"{'Browser':<12} {'Profile':<24} Path")
+        print(f"{'-------':<12} {'-------':<24} ----")
+        for p in profiles:
+            print(f"{p.browser_name:<12} {p.profile_name:<24} {p.bookmark_path}")
+        return 0
+
+    print("detecting browsers...")
+    pairs = collect_all_bookmarks(browser_filter=args.browser)
+
+    if not pairs:
+        if args.browser:
+            print(f"no bookmarks found for browser: {args.browser}", file=sys.stderr)
+        else:
+            print("no supported browsers detected", file=sys.stderr)
+        return 1
+
+    idx = Index(db_path=args.db, model_name=args.model)
+    total_result = SyncResult()
+
+    for profile, bookmarks in pairs:
+        source_id = profile.source_id
+        print(f"syncing {profile.browser_name} ({profile.profile_name}): "
+              f"{len(bookmarks)} bookmarks...")
+        result = idx.sync(bookmarks, source=source_id, batch_size=args.batch_size)
+        total_result.added += result.added
+        total_result.updated += result.updated
+        total_result.removed += result.removed
+        total_result.unchanged += result.unchanged
+        if result.total_changed > 0:
+            print(f"  {result}")
+
+    print(f"\ndone. {total_result}")
     return 0
 
 
@@ -122,6 +177,22 @@ def build_parser():
     po = sub.add_parser("open", help="search and open the top result in the browser")
     po.add_argument("query")
     po.set_defaults(func=_cmd_open)
+
+    psync = sub.add_parser(
+        "sync",
+        help="sync bookmarks directly from installed browsers (no export needed)",
+    )
+    psync.add_argument(
+        "--browser", type=str, default=None,
+        help="sync only this browser (chrome, edge, brave, firefox)",
+    )
+    psync.add_argument(
+        "--list-browsers", action="store_true",
+        help="list detected browsers and profiles, then exit",
+    )
+    psync.add_argument("--model", default=DEFAULT_MODEL)
+    psync.add_argument("--batch-size", type=int, default=64)
+    psync.set_defaults(func=_cmd_sync)
 
     return p
 
