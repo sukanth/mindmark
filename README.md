@@ -217,6 +217,8 @@ mindmark find "helm chart examples" --domain github.com
 mindmark find "docker compose setup" --folder devops
 ```
 
+The default `find` output uses an adaptive ASCII table that wraps titles, folders, URLs, and excerpts cleanly across supported terminals and platforms.
+
 ### 3️⃣ Open a result directly
 
 ```bash

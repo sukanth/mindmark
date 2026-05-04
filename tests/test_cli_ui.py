@@ -91,13 +91,46 @@ def test_find_human_output_includes_score_url_folder_excerpt_and_hint(monkeypatc
 
     assert rc == 0
     captured = capsys.readouterr()
-    assert "1. Example" in captured.out
-    assert "score=0.875" in captured.out
-    assert "folder=Work/Docs" in captured.out
-    assert "url=https://example.com/docs" in captured.out
-    assert "⤵ Helpful excerpt." in captured.out
+    assert "Search results for 'docs' (1)" in captured.out
+    assert "No  Score" in captured.out
+    assert " 1  0.875  Example" in captured.out
+    assert "Work/Docs" in captured.out
+    assert "URL: https://example.com/docs" in captured.out
+    assert "Excerpt: Helpful excerpt." in captured.out
+    assert "score=" not in captured.out
+    assert "⤵" not in captured.out
     assert "Hint: Open a result with:" in captured.out
     assert captured.err == ""
+
+
+def test_find_human_output_wraps_to_terminal_width(monkeypatch):
+    class TtyBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    out = TtyBuffer()
+    console = Console(color=False, stdout=out)
+    monkeypatch.setenv("COLUMNS", "56")
+    cli._render_find_results(
+        console,
+        [
+            {
+                "score": 0.875,
+                "title": "A very long bookmark title that needs wrapping in narrow terminals",
+                "url": "https://example.com/really/long/path/that/also/needs/wrapping",
+                "folder_path": "Favorites bar/Work/Very Long Folder Name",
+                "domain": "example.com",
+                "relevant_excerpt": "A long excerpt that should wrap without using non-ASCII markers.",
+            }
+        ],
+        query="docs",
+        include_excerpt=True,
+    )
+
+    lines = out.getvalue().splitlines()
+    assert max(len(line) for line in lines) <= 56
+    assert "URL:" in out.getvalue()
+    assert "Excerpt:" in out.getvalue()
 
 
 def test_find_json_preserves_result_list_and_has_no_color(monkeypatch, capsys):
