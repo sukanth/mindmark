@@ -47,6 +47,8 @@ Ask in natural language — mindmark remembers what you saved.
 | `mindmark validate` | Check indexed bookmark URLs for stale links (HTTP 4xx/5xx or unreachable) and report them |
 | `mindmark drop-index` | Delete the local SQLite index database (with confirmation unless `--yes`) |
 
+Human output is concise and TTY-aware: color is enabled in real terminals, disabled automatically for pipes/CI, and can always be turned off with `--no-color`.
+
 > 🔌 **Works offline** after the first run. Embeddings run on-device via [fastembed](https://github.com/qdrant/fastembed) (ONNX Runtime, ~130 MB one-time model download).
 
 ### Supported Browsers
@@ -155,12 +157,16 @@ mindmark sync --list-browsers
 
 Example output:
 
-```
-Browser      Profile                  Path
--------      -------                  ----
-Chrome       Default                  ~/Library/.../Google/Chrome/Default/Bookmarks
-Chrome       Profile 3                ~/Library/.../Google/Chrome/Profile 3/Bookmarks
-Edge         Default                  ~/Library/.../Microsoft Edge/Default/Bookmarks
+```text
+Supported browsers
+  - Chrome
+  - Edge
+  - Brave
+  - Firefox
+
+Detected profiles
+  - Chrome (Default) → ~/Library/Application Support/Google/Chrome/Default/Bookmarks
+  - Edge (Default) → C:\Users\you\AppData\Local\Microsoft\Edge\User Data\Default\Bookmarks
 ```
 
 </details>
@@ -238,7 +244,7 @@ mm open "docker setup"
 
 ### 4️⃣ JSON output for scripting
 
-Pipe results into **fzf**, **jq**, **Alfred**, **Raycast**, **PowerToys Run**, or any tool that accepts JSON:
+Pipe results into **fzf**, **jq**, **Alfred**, **Raycast**, **PowerToys Run**, or any tool that accepts JSON. `find --json` returns the same result object shape as the CLI uses internally:
 
 ```bash
 # macOS / Linux
@@ -248,9 +254,43 @@ mindmark find "istio service mesh" --json | jq '.[].url'
 mindmark find "istio service mesh" --json | ConvertFrom-Json | ForEach-Object { $_.url }
 ```
 
+```json
+[
+  {
+    "score": 0.842,
+    "title": "Istio / Service Mesh",
+    "url": "https://istio.io/latest/docs/",
+    "folder_path": "Work/Kubernetes",
+    "domain": "istio.io"
+  }
+]
+```
+
+If you add `--excerpt`, results that have enriched page content also include `relevant_excerpt`.
+
 ---
 
 ## 📖 Usage
+
+### Output modes
+
+By default, mindmark prints professional human-readable output with status symbols, hints, and color when stdout is an interactive terminal:
+
+```text
+→ Reading bookmarks from Chrome (Default), Firefox (default-release)
+✓ Collected 812 bookmarks from 2 profile(s)
+→ Syncing index at ~/.mindmark/index.db
+✓ Sync complete: added=12, updated=3, removed=0, unchanged=797
+Hint: Run 'mindmark find "your query"' to search your bookmarks.
+```
+
+Use `--no-color` when you want plain text even in a TTY. `NO_COLOR=1` and `MINDMARK_NO_COLOR=1` are also respected.
+
+```bash
+mindmark --no-color stats
+```
+
+Use `--json` for stable machine-readable output from `find`, `sync`, `stats`, `validate`, and `enrich`.
 
 ### Syncing
 
@@ -261,11 +301,49 @@ mindmark sync                         # sync all detected browsers
 mindmark sync --browser chrome        # sync only Chrome
 mindmark sync --browser firefox       # sync only Firefox
 mindmark sync --list-browsers         # list detected browsers and profiles
+mindmark sync --json                  # emit sync summary as JSON
 ```
 
 When you add new bookmarks in your browser, just run `mindmark sync` again — it will pick up only the changes.
 
 > 💡 **Note:** If you change the embedding model with `--model`, all bookmarks will be re-embedded on the next sync. Browser names are case-insensitive (e.g., `--browser Chrome` and `--browser chrome` both work).
+
+`sync --json` returns a top-level `summary`, synced `profiles`, any `warnings`, plus `db_path` and `model`.
+
+### Stats
+
+```bash
+mindmark stats
+mindmark stats --json
+```
+
+Example human output:
+
+```text
+Bookmarks: 812
+Index:     ~/.mindmark/index.db
+Model:     BAAI/bge-small-en-v1.5
+
+Top domains
+  github.com: 42
+  docs.python.org: 18
+
+Top folders
+  Work/Kubernetes: 27
+  Reading: 14
+```
+
+`stats --json` returns:
+
+```json
+{
+  "db_path": "/home/you/.mindmark/index.db",
+  "model": "BAAI/bge-small-en-v1.5",
+  "top_domains": [{"count": 42, "domain": "github.com"}],
+  "top_folders": [{"count": 27, "folder": "Work/Kubernetes"}],
+  "total": 812
+}
+```
 
 ### Filters and options
 
@@ -293,7 +371,7 @@ Use `drop-index` to remove the local SQLite index database when you want a clean
 ```bash
 mindmark drop-index               # asks for confirmation
 mindmark drop-index --yes         # skip confirmation
-mindmark drop-index --db /path/to/index.db
+mindmark --db /path/to/index.db drop-index
 ```
 
 ### Validate stale links
@@ -304,9 +382,10 @@ Use `validate` to probe all indexed HTTP(S) bookmark URLs and identify stale one
 mindmark validate                     # identify all stale bookmarks
 mindmark validate --timeout 5         # per-request timeout in seconds (default 8)
 mindmark validate --workers 32        # parallel URL checks (default 16)
+mindmark validate --json              # emit validation summary as JSON
 ```
 
-Non-HTTP URLs (for example `file:` or browser-internal URLs) are skipped and not checked.
+Non-HTTP URLs (for example `file:` or browser-internal URLs) are skipped and not checked. `validate --json` returns `total`, `checked`, `healthy`, `skipped`, `stale_count`, and a `stale` array with `title`, `url`, `folder_path`, `status_code`, `reason`, and `error`.
 
 ### Swap the embedding model
 
@@ -367,6 +446,7 @@ Without enrichment, searching for **"authentication strategies"** on a bookmark 
 
 ```bash
 mindmark enrich --limit 100 --workers 4
+mindmark enrich --limit 100 --workers 4 --json
 ```
 
 Options:
@@ -408,21 +488,27 @@ The `⤵` symbol indicates content from the enriched page. Without enrichment, t
 
 ### Status and monitoring
 
-Check enrichment status:
+Get a machine-readable enrichment run summary:
 
 ```bash
-python -c "
-from mindmark.index import Index
-idx = Index()
-print(idx.enrichment_stats())
-idx.close()
-"
+mindmark enrich --json
 ```
 
 Example output:
-```python
-{'pending': 1234, 'complete': 450, 'failed': 23}
+```json
+{
+  "before": {"pending": 1234, "complete": 450, "failed": 23},
+  "after": {"pending": 1134, "complete": 550, "failed": 25},
+  "complete": 100,
+  "failed": 2,
+  "reset_failed": 0,
+  "skipped": 0,
+  "status": "complete",
+  "total": 102
+}
 ```
+
+> `mindmark enrich --json` still performs enrichment when work is pending. To inspect counts without fetching pages, use the Python API (`Index().enrichment_stats()`).
 
 ### Notes
 
@@ -433,9 +519,11 @@ Example output:
 
 ---
 
+## 💾 Storage Layout
+
 | What | macOS / Linux | Windows | Override |
 |---|---|---|---|
-| Index database | `~/.mindmark/index.db` | `%LOCALAPPDATA%\mindmark\index.db` | `--db` flag or `MINDMARK_DB` env var |
+| Index database | `~/.mindmark/index.db` | `%LOCALAPPDATA%\mindmark\index.db` | global `--db` flag (before the command) or `MINDMARK_DB` env var |
 | Home directory | `~/.mindmark/` | `%LOCALAPPDATA%\mindmark\` | `MINDMARK_HOME` env var |
 | Embedding model | `~/.cache/fastembed/` | `%LOCALAPPDATA%\fastembed\` | Managed by fastembed |
 

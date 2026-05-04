@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import json
 import os
 import shutil
 import sqlite3
-import sys
 import webbrowser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -13,8 +13,26 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from . import __version__
-from .parser import parse_file
-from .index import Index, SyncResult, default_db_path, DEFAULT_MODEL
+from ._console import Console
+from .defaults import DEFAULT_MODEL, default_db_path
+
+_SUPPORTED_BROWSER_NAMES = {
+    "chrome": "Chrome",
+    "edge": "Edge",
+    "brave": "Brave",
+    "firefox": "Firefox",
+}
+
+
+def _console(args: argparse.Namespace) -> Console:
+    existing = getattr(args, "console", None)
+    if isinstance(existing, Console):
+        return existing
+    return Console(color=False if getattr(args, "no_color", False) else None)
+
+
+def _print_json(console: Console, payload: object, *, preserve_order: bool = False) -> None:
+    console.out(json.dumps(payload, indent=2, sort_keys=not preserve_order))
 
 
 def _is_http_url(url: str) -> bool:
@@ -33,12 +51,10 @@ def _check_url_status(url: str, timeout: float) -> tuple[str, int | None, str | 
         with urlopen(req, timeout=timeout) as resp:
             return url, int(getattr(resp, "status", 0) or 0), None
     except HTTPError as e:
-        # HTTP errors still include a useful status code.
         return url, int(e.code), str(e.reason) if e.reason else "HTTP error"
     except Exception:
         pass
 
-    # Fallback to GET for servers that reject HEAD.
     try:
         req = Request(url, headers=headers, method="GET")
         with urlopen(req, timeout=timeout) as resp:
@@ -51,19 +67,35 @@ def _check_url_status(url: str, timeout: float) -> tuple[str, int | None, str | 
         return url, None, str(e)
 
 
-def _cmd_validate(args):
+def _cmd_validate(args: argparse.Namespace) -> int:
+    from .index import Index
+
+    console = _console(args)
     idx = Index(db_path=args.db)
     try:
         bookmarks = idx.all_bookmarks()
+        total = len(bookmarks)
         if not bookmarks:
-            print("index is empty — run 'mindmark sync' first.")
+            payload = {
+                "checked": 0,
+                "healthy": 0,
+                "message": "Index is empty. Run 'mindmark sync' to import bookmarks.",
+                "skipped": 0,
+                "stale": [],
+                "stale_count": 0,
+                "total": 0,
+            }
+            if getattr(args, "json", False):
+                _print_json(console, payload)
+            else:
+                console.error(payload["message"])
             return 1
 
-        total = len(bookmarks)
-        print(f"validating {total} indexed bookmarks...")
+        if not getattr(args, "json", False):
+            console.status(f"Validating {total} indexed bookmarks")
 
         url_to_bm = {b["url"]: b for b in bookmarks}
-        stale = []
+        stale: list[tuple[dict, int | None, str | None]] = []
         skipped = 0
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as ex:
@@ -81,47 +113,71 @@ def _cmd_validate(args):
 
         checked = total - skipped
         healthy = checked - len(stale)
+        stale_items = []
+        for bm, code, error in stale:
+            reason = f"HTTP {code}" if code is not None else (error or "unreachable")
+            stale_items.append(
+                {
+                    "error": error,
+                    "folder_path": bm["folder_path"],
+                    "reason": reason,
+                    "status_code": code,
+                    "title": bm["title"],
+                    "url": bm["url"],
+                }
+            )
 
-        print(
-            f"checked={checked} healthy={healthy} stale={len(stale)} skipped={skipped}"
-        )
-
-        if not stale:
-            print("all checked bookmarks look valid.")
+        payload = {
+            "checked": checked,
+            "healthy": healthy,
+            "skipped": skipped,
+            "stale": stale_items,
+            "stale_count": len(stale_items),
+            "total": total,
+        }
+        if getattr(args, "json", False):
+            _print_json(console, payload)
             return 0
 
-        print("\nstale bookmarks found:")
-        for i, (bm, code, error) in enumerate(stale, 1):
-            reason = f"HTTP {code}" if code is not None else (error or "unreachable")
-            folder = bm["folder_path"] or "(root)"
-            print(f"\n{i}. {bm['title']}")
-            print(f"   status: {reason}")
-            print(f"   url:    {bm['url']}")
-            print(f"   path:   {folder}")
+        summary = (
+            f"Checked {checked} bookmarks: healthy={healthy}, "
+            f"stale={len(stale)}, skipped={skipped}"
+        )
+        if not stale:
+            console.success(summary)
+            return 0
 
+        console.warning(summary)
+        console.out()
+        console.out(console.style("Stale bookmarks", "bold"))
+        for i, item in enumerate(stale_items, 1):
+            folder = item["folder_path"] or "(root)"
+            console.out(f"{i:2d}. {item['title']}")
+            console.out(f"    status: {item['reason']}")
+            console.out(f"    url:    {item['url']}")
+            console.out(f"    folder: {folder}")
+        console.hint("Review or remove stale bookmarks in your browser, then run 'mindmark sync'.")
         return 0
-    except KeyboardInterrupt:
-        print("\n\nCancelled by user.")
-        return 1
     finally:
         idx.close()
 
 
-def _cmd_drop_index(args):
+def _cmd_drop_index(args: argparse.Namespace) -> int:
+    console = _console(args)
     db_path = Path(args.db).expanduser() if args.db else default_db_path()
 
     if not db_path.exists():
-        print(f"index not found: {db_path}")
+        console.success(f"Index not found: {db_path}")
         return 0
 
     if not args.yes:
         try:
             ans = input(f"drop local index at '{db_path}'? [y/N] ").strip().lower()
             if ans != "y":
-                print("cancelled.")
+                console.warning("Cancelled.")
                 return 0
         except (EOFError, OSError):
-            print("cancelled.")
+            console.warning("Cancelled.")
             return 0
 
     try:
@@ -130,21 +186,19 @@ def _cmd_drop_index(args):
         elif db_path.is_dir():
             shutil.rmtree(db_path)
         else:
-            print(f"index path is not a file or directory: {db_path}")
+            console.error(f"Index path is not a file or directory: {db_path}")
             return 1
     except PermissionError as e:
-        # Windows can keep SQLite files locked by another process handle.
-        # If deletion fails, try clearing index data in-place as a fallback.
         if db_path.is_file() and _clear_index_contents(db_path):
-            print(f"index file is in use; cleared index contents instead: {db_path}")
+            console.warning(f"Index file is in use; cleared contents instead: {db_path}")
             return 0
-        print(f"error: failed to remove index: {e}", file=sys.stderr)
+        console.error(f"Failed to remove index: {e}")
         return 1
     except OSError as e:
-        print(f"error: failed to remove index: {e}", file=sys.stderr)
+        console.error(f"Failed to remove index: {e}")
         return 1
 
-    print(f"dropped local index: {db_path}")
+    console.success(f"Dropped local index: {db_path}")
     return 0
 
 
@@ -164,168 +218,403 @@ def _clear_index_contents(db_path: Path) -> bool:
         return False
 
 
-def _cmd_index(args):
+def _cmd_index(args: argparse.Namespace) -> int:
+    from .index import Index
+    from .parser import parse_file
+
+    console = _console(args)
     path = Path(args.path).expanduser()
     if not path.is_file():
-        print(f"error: file not found: {path}", file=sys.stderr)
+        console.error(f"File not found: {path}")
         return 2
-    print(f"[1/3] parsing {path}")
+
+    console.status(f"Parsing bookmarks from {path}")
     bookmarks = parse_file(str(path))
-    print(f"      parsed {len(bookmarks)} unique bookmarks")
-    print(f"[2/3] loading embedding model ({args.model})")
+    console.success(f"Parsed {len(bookmarks)} unique bookmarks")
+    console.status(f"Loading embedding model: {args.model}")
     idx = Index(db_path=args.db, model_name=args.model)
-    print(f"[3/3] embedding + writing index to {idx.db_path}")
-    info = idx.rebuild(bookmarks, batch_size=args.batch_size)
-    print(f"done. indexed={info['indexed']} dim={info.get('dim','?')} model={info['model']}")
+    try:
+        console.status(f"Writing index to {idx.db_path}")
+        info = idx.rebuild(bookmarks, batch_size=args.batch_size)
+    finally:
+        idx.close()
+    console.success(
+        f"Indexed {info['indexed']} bookmarks "
+        f"(dim={info.get('dim', '?')}, model={info['model']})"
+    )
     return 0
 
 
-def _auto_sync_hint(idx: Index) -> None:
-    """Print a hint when the index is empty."""
-    if not idx.is_empty():
-        return
-    print("index is empty — run 'mindmark sync' to import bookmarks from your browsers,")
-    print("or run 'mindmark index <bookmarks.html>' to import from an exported file.")
-    print()
+def _format_score(score: object) -> str:
+    try:
+        return f"{float(score):.3f}"
+    except (TypeError, ValueError):
+        return "n/a"
 
 
-def _cmd_find(args):
+def _cmd_find(args: argparse.Namespace) -> int:
+    from .index import Index
+
+    console = _console(args)
     idx = Index(db_path=args.db)
-    if not getattr(args, 'json', False):
-        _auto_sync_hint(idx)
-    include_excerpt = getattr(args, 'excerpt', False)
-    results = idx.search(
-        query=args.query, k=args.top,
-        domain=args.domain, folder=args.folder,
-        include_excerpt=include_excerpt,
-    )
+    try:
+        include_excerpt = getattr(args, "excerpt", False)
+        results = idx.search(
+            query=args.query,
+            k=args.top,
+            domain=args.domain,
+            folder=args.folder,
+            include_excerpt=include_excerpt,
+        )
+    finally:
+        idx.close()
+
     if not results:
-        print("no results (is the index empty? run: mindmark sync)")
+        if getattr(args, "json", False):
+            _print_json(console, [], preserve_order=True)
+        else:
+            console.out("No matching bookmarks. Run 'mindmark sync' to import bookmarks or broaden your query.")
         return 1
 
     if args.open is not None:
         n = args.open - 1
         if not 0 <= n < len(results):
-            print(f"error: --open {args.open} out of range (1..{len(results)})", file=sys.stderr)
+            console.error(f"--open {args.open} is out of range (1..{len(results)})")
             return 2
         webbrowser.open(results[n]["url"])
-        print(f"opened: {results[n]['title']}")
+        console.success(f"Opened {args.open}. {results[n]['title']}")
+        console.out(results[n]["url"])
         return 0
 
-    import json
     if getattr(args, "json", False):
-        print(json.dumps(results, indent=2))
-    else:
-        for i, r in enumerate(results, 1):
-            domain = urlparse(r["url"]).netloc
-            folder = r["folder_path"]
-            path = f"{folder}/" if folder else ""
-            print(f"{i:2d}. {r['title']}")
-            print(f"    {path}{domain}")
-            if include_excerpt and r.get("relevant_excerpt"):
-                excerpt = r["relevant_excerpt"]
-                print(f"    ⤵ {excerpt}")
+        _print_json(console, results, preserve_order=True)
+        return 0
 
+    for i, r in enumerate(results, 1):
+        folder = r.get("folder_path") or "(root)"
+        url = r["url"]
+        console.out(f"{i:2d}. {console.style(r['title'], 'bold')}")
+        console.out(
+            "    "
+            f"score={console.style(_format_score(r.get('score')), 'accent')}  "
+            f"folder={folder}"
+        )
+        console.out(f"    url={url}")
+        if include_excerpt and r.get("relevant_excerpt"):
+            console.out(f"    ⤵ {r['relevant_excerpt']}")
+    console.hint(f"Open a result with: mindmark find {args.query!r} --open N")
     return 0
 
 
-def _cmd_stats(args):
+def _cmd_open(args: argparse.Namespace) -> int:
+    args.open = 1
+    args.json = False
+    return _cmd_find(args)
+
+
+def _stable_stats(stats: dict) -> dict:
+    return {
+        "db_path": stats["db_path"],
+        "model": stats["model"],
+        "top_domains": [
+            {"count": count, "domain": domain}
+            for domain, count in stats.get("top_domains", [])
+        ],
+        "top_folders": [
+            {"count": count, "folder": folder}
+            for folder, count in stats.get("top_folders", [])
+        ],
+        "total": stats["total"],
+    }
+
+
+def _cmd_stats(args: argparse.Namespace) -> int:
+    from .index import Index
+
+    console = _console(args)
     idx = Index(db_path=args.db)
     try:
-        stats = idx.stats()
-        print(f"bookmarks: {stats['total']}")
-        if stats['total'] > 0:
-            print(f"model:     {stats['model']}")
-            if stats['top_domains']:
-                print(f"\ntop domains:")
-                for domain, count in stats['top_domains']:
-                    print(f"  {domain}: {count}")
-            if stats['top_folders']:
-                print(f"\ntop folders:")
-                for folder, count in stats['top_folders']:
-                    print(f"  {folder}: {count}")
-        return 0
+        stats = _stable_stats(idx.stats())
     finally:
         idx.close()
 
+    if getattr(args, "json", False):
+        _print_json(console, stats)
+        return 0
 
-def _cmd_enrich(args):
+    console.out(f"Bookmarks: {console.style(str(stats['total']), 'accent')}")
+    console.out(f"Index:     {stats['db_path']}")
+    if stats["model"]:
+        console.out(f"Model:     {stats['model']}")
+    if stats["total"] == 0:
+        console.hint("Run 'mindmark sync' to import bookmarks from your browsers.")
+        return 0
+
+    if stats["top_domains"]:
+        console.out()
+        console.out(console.style("Top domains", "bold"))
+        for item in stats["top_domains"]:
+            console.out(f"  {item['domain']}: {item['count']}")
+    if stats["top_folders"]:
+        console.out()
+        console.out(console.style("Top folders", "bold"))
+        for item in stats["top_folders"]:
+            console.out(f"  {item['folder']}: {item['count']}")
+    return 0
+
+
+def _cmd_enrich(args: argparse.Namespace) -> int:
     from .enricher import enrich_pending
+    from .index import Index
 
+    console = _console(args)
     idx = Index(db_path=args.db)
     try:
         pending = idx.pending_enrichment_urls(
             limit=None if args.refresh_failed else args.limit
         )
+        reset = 0
         if args.refresh_failed:
             reset = idx.reset_failed_enrichment()
-            if reset:
-                print(f"reset {reset} failed enrichment rows to pending")
-            # re-query after reset, respecting --limit
             pending = idx.pending_enrichment_urls(limit=args.limit)
 
-        estats = idx.enrichment_stats()
-        total_pending = estats.get("pending", 0)
-
+        before = idx.enrichment_stats()
         if not pending:
-            print("nothing to enrich — run 'mindmark sync' first, or use --refresh-failed")
+            payload = {
+                "before": before,
+                "complete": 0,
+                "failed": 0,
+                "pending": 0,
+                "reset_failed": reset,
+                "skipped": 0,
+                "status": "idle",
+                "total": 0,
+            }
+            if getattr(args, "json", False):
+                _print_json(console, payload)
+            else:
+                console.out("Nothing to enrich. Run 'mindmark sync' first, or use --refresh-failed.")
             return 0
 
-        to_process = len(pending)
-        print(
-            f"enriching {to_process} bookmarks "
-            f"(pending={total_pending} workers={args.workers} timeout={args.timeout}s)"
-        )
+        if not getattr(args, "json", False):
+            console.status(
+                f"Enriching {len(pending)} bookmarks "
+                f"(pending={before.get('pending', 0)}, workers={args.workers}, timeout={args.timeout}s)"
+            )
 
         result = enrich_pending(
             idx,
             limit=args.limit,
             workers=args.workers,
             timeout=args.timeout,
-            refresh_failed=False,  # already handled above
+            refresh_failed=False,
         )
-        print(f"done. {result}")
+        after = idx.enrichment_stats()
+        payload = {
+            "after": after,
+            "before": before,
+            "complete": result.complete,
+            "failed": result.failed,
+            "reset_failed": reset,
+            "skipped": result.skipped,
+            "status": "complete",
+            "total": result.total,
+        }
+        if getattr(args, "json", False):
+            _print_json(console, payload)
+        else:
+            console.success(
+                f"Enrichment complete: complete={result.complete}, "
+                f"failed={result.failed}, skipped={result.skipped}"
+            )
         return 0
-    except KeyboardInterrupt:
-        print("\n\nCancelled by user.")
-        return 1
     finally:
         idx.close()
 
 
-def _cmd_sync(args):
-    from .browsers import parse_browser_bookmarks, detect_browsers
-    
-    browsers = detect_browsers()
-    if not browsers:
-        print("error: no browsers detected", file=sys.stderr)
-        return 1
-        
-    print(f"[1/2] collecting bookmarks from {', '.join(b.browser_name for b in browsers)}")
-    bookmarks = []; [bookmarks.extend(parse_browser_bookmarks(b)) for b in browsers]
-    if not bookmarks:
-        print("no bookmarks found.")
+def _browser_profile_dict(profile: object) -> dict:
+    return {
+        "browser": getattr(profile, "browser_name"),
+        "path": str(getattr(profile, "bookmark_path")),
+        "profile": getattr(profile, "profile_name"),
+        "source_id": getattr(profile, "source_id"),
+        "type": getattr(profile, "browser_type"),
+    }
+
+
+def _detect_profiles(browser: str | None) -> list[object]:
+    from .browsers.paths import detect_browsers
+
+    profiles = detect_browsers()
+    if browser:
+        wanted = browser.lower()
+        profiles = [p for p in profiles if p.browser_name.lower() == wanted]
+    return profiles
+
+
+def _list_browsers(args: argparse.Namespace) -> int:
+    console = _console(args)
+    profiles = _detect_profiles(getattr(args, "browser", None))
+    payload = {
+        "detected": [_browser_profile_dict(p) for p in profiles],
+        "supported": list(_SUPPORTED_BROWSER_NAMES.values()),
+    }
+    if getattr(args, "json", False):
+        _print_json(console, payload)
         return 0
-    print(f"      found {len(bookmarks)} unique bookmarks")
-    
-    print(f"[2/2] syncing to {args.db or default_db_path()}")
-    idx = Index(db_path=args.db, model_name=args.model)
-    res = idx.sync(bookmarks)
-    
-    print(f"done. added={res.added} updated={res.updated} removed={res.removed}")
+
+    console.out(console.style("Supported browsers", "bold"))
+    for name in payload["supported"]:
+        console.out(f"  - {name}")
+    if profiles:
+        console.out()
+        console.out(console.style("Detected profiles", "bold"))
+        for profile in profiles:
+            console.out(
+                f"  - {profile.browser_name} ({profile.profile_name}) "
+                f"→ {profile.bookmark_path}"
+            )
+    else:
+        console.out()
+        console.out("Detected profiles: none")
     return 0
 
 
-def build_parser():
+def _cmd_sync(args: argparse.Namespace) -> int:
+    from .browsers import parse_browser_bookmarks
+
+    console = _console(args)
+    if args.list_browsers:
+        return _list_browsers(args)
+
+    profiles = _detect_profiles(args.browser)
+    if not profiles:
+        target = _SUPPORTED_BROWSER_NAMES.get(args.browser or "", "supported browsers")
+        message = f"No bookmark files detected for {target}."
+        payload = {
+            "error": message,
+            "profiles": [],
+            "supported": list(_SUPPORTED_BROWSER_NAMES.values()),
+        }
+        if getattr(args, "json", False):
+            _print_json(console, payload)
+        else:
+            console.error(message)
+            console.hint("Use 'mindmark sync --list-browsers' to see supported browsers.", stderr=True)
+        return 1
+
+    if not getattr(args, "json", False):
+        names = ", ".join(f"{p.browser_name} ({p.profile_name})" for p in profiles)
+        console.status(f"Reading bookmarks from {names}")
+
+    parsed: list[tuple[object, list[object]]] = []
+    warnings: list[dict] = []
+    for profile in profiles:
+        try:
+            bookmarks = parse_browser_bookmarks(profile)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, sqlite3.Error) as exc:
+            warning = {
+                "browser": profile.browser_name,
+                "error": str(exc),
+                "profile": profile.profile_name,
+            }
+            warnings.append(warning)
+            if not getattr(args, "json", False):
+                console.warning(
+                    f"Skipped {profile.browser_name} ({profile.profile_name}): {exc}"
+                )
+            continue
+        parsed.append((profile, bookmarks))
+
+    if not parsed:
+        payload = {
+            "error": "No readable browser bookmark profiles were found.",
+            "profiles": [],
+            "summary": {"added": 0, "removed": 0, "unchanged": 0, "updated": 0},
+            "warnings": warnings,
+        }
+        if getattr(args, "json", False):
+            _print_json(console, payload)
+        else:
+            console.error(payload["error"])
+            console.hint("Close browsers that may be locking bookmark files, then retry.", stderr=True)
+        return 1
+
+    total_bookmarks = sum(len(bookmarks) for _profile, bookmarks in parsed)
+    if not getattr(args, "json", False):
+        console.success(f"Collected {total_bookmarks} bookmarks from {len(parsed)} profile(s)")
+        console.status(f"Syncing index at {args.db or default_db_path(create=False)}")
+
+    from .index import Index
+
+    idx = Index(db_path=args.db, model_name=args.model)
+    try:
+        summary = {"added": 0, "removed": 0, "unchanged": 0, "updated": 0}
+        profile_results = []
+        for profile, bookmarks in parsed:
+            res = idx.sync(bookmarks, source=profile.source_id)
+            item = _browser_profile_dict(profile)
+            item.update(
+                {
+                    "bookmarks": len(bookmarks),
+                    "added": res.added,
+                    "removed": res.removed,
+                    "unchanged": res.unchanged,
+                    "updated": res.updated,
+                }
+            )
+            profile_results.append(item)
+            summary["added"] += res.added
+            summary["removed"] += res.removed
+            summary["unchanged"] += res.unchanged
+            summary["updated"] += res.updated
+        payload = {
+            "db_path": str(idx.db_path),
+            "model": idx.model_name,
+            "profiles": profile_results,
+            "summary": summary,
+            "warnings": warnings,
+        }
+    finally:
+        idx.close()
+
+    if getattr(args, "json", False):
+        _print_json(console, payload)
+    else:
+        console.success(
+            "Sync complete: "
+            f"added={summary['added']}, updated={summary['updated']}, "
+            f"removed={summary['removed']}, unchanged={summary['unchanged']}"
+        )
+        if summary["added"] or summary["updated"]:
+            console.hint("Run 'mindmark find \"your query\"' to search your bookmarks.")
+    return 0
+
+
+def _add_search_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("query")
+    parser.add_argument("-k", "--top", type=int, default=10)
+    parser.add_argument("--domain")
+    parser.add_argument("--folder")
+    parser.add_argument(
+        "--excerpt",
+        action="store_true",
+        help="include excerpt from enriched page content (requires mindmark enrich)",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mindmark",
-        description="mindmark — local semantic search over your browser bookmarks.",
+        description="mindmark - local semantic search over your browser bookmarks.",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument(
-        "--db", default=os.environ.get("MINDMARK_DB"),
-        help=f"SQLite index path (default: {default_db_path()})",
+        "--db",
+        default=os.environ.get("MINDMARK_DB"),
+        help=f"SQLite index path (default: {default_db_path(create=False)})",
     )
+    p.add_argument("--no-color", action="store_true", help="disable ANSI color output")
 
     sub = p.add_subparsers(dest="cmd")
 
@@ -336,89 +625,96 @@ def build_parser():
     pi.set_defaults(func=_cmd_index)
 
     pf = sub.add_parser("find", help="search bookmarks by natural-language query")
-    pf.add_argument("query")
-    pf.add_argument("-k", "--top", type=int, default=10)
-    pf.add_argument("--domain")
-    pf.add_argument("--folder")
+    _add_search_options(pf)
     pf.add_argument("--json", action="store_true")
     pf.add_argument("--open", type=int, metavar="N")
-    pf.add_argument(
-        "--excerpt", action="store_true",
-        help="include excerpt from enriched page content (requires mindmark enrich)",
-    )
     pf.set_defaults(func=_cmd_find)
 
+    po = sub.add_parser("open", help="open the top bookmark matching a query")
+    _add_search_options(po)
+    po.set_defaults(func=_cmd_open)
+
     ps = sub.add_parser("stats", help="show index stats")
+    ps.add_argument("--json", action="store_true")
     ps.set_defaults(func=_cmd_stats)
 
     py = sub.add_parser("sync", help="automatically sync bookmarks from local browsers")
     py.add_argument("--model", default=DEFAULT_MODEL)
+    py.add_argument(
+        "--browser",
+        choices=sorted(_SUPPORTED_BROWSER_NAMES),
+        type=str.lower,
+        help="sync only one browser: chrome, edge, brave, or firefox",
+    )
+    py.add_argument("--list-browsers", action="store_true", help="list supported and detected browsers")
+    py.add_argument("--json", action="store_true")
     py.set_defaults(func=_cmd_sync)
 
     pv = sub.add_parser("validate", help="validate indexed bookmark URLs and report stale entries (read-only)")
-    pv.add_argument(
-        "--timeout",
-        type=float,
-        default=8.0,
-        help="per-request timeout in seconds (default: 8.0)",
-    )
-    pv.add_argument(
-        "--workers",
-        type=int,
-        default=16,
-        help="parallel request workers (default: 16)",
-    )
+    pv.add_argument("--timeout", type=float, default=8.0, help="per-request timeout in seconds (default: 8.0)")
+    pv.add_argument("--workers", type=int, default=16, help="parallel request workers (default: 16)")
+    pv.add_argument("--json", action="store_true")
     pv.set_defaults(func=_cmd_validate)
 
     pd = sub.add_parser("drop-index", help="drop (delete) the local index database")
-    pd.add_argument(
-        "--yes",
-        action="store_true",
-        help="auto-confirm index deletion",
-    )
+    pd.add_argument("--yes", action="store_true", help="auto-confirm index deletion")
     pd.set_defaults(func=_cmd_drop_index)
 
     pe = sub.add_parser(
         "enrich",
         help="fetch page content for bookmarks and build summary embeddings (local, no cloud)",
     )
-    pe.add_argument(
-        "--limit", type=int, default=None,
-        help="max bookmarks to process per run (default: all pending)",
-    )
-    pe.add_argument(
-        "--workers", type=int, default=8,
-        help="parallel fetch workers (default: 8)",
-    )
-    pe.add_argument(
-        "--timeout", type=float, default=10.0,
-        help="per-request fetch timeout in seconds (default: 10.0)",
-    )
-    pe.add_argument(
-        "--refresh-failed", action="store_true",
-        help="retry previously failed enrichments",
-    )
+    pe.add_argument("--limit", type=int, default=None, help="max bookmarks to process per run (default: all pending)")
+    pe.add_argument("--workers", type=int, default=8, help="parallel fetch workers (default: 8)")
+    pe.add_argument("--timeout", type=float, default=10.0, help="per-request fetch timeout in seconds (default: 10.0)")
+    pe.add_argument("--refresh-failed", action="store_true", help="retry previously failed enrichments")
+    pe.add_argument("--json", action="store_true")
     pe.set_defaults(func=_cmd_enrich)
 
     return p
 
 
-def main(argv=None):
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.cmd == "validate":
         if args.timeout <= 0:
             parser.error("--timeout must be > 0")
         if args.workers <= 0:
             parser.error("--workers must be > 0")
-        return args.func(args)
-    if args.cmd == "enrich":
+    elif args.cmd == "enrich":
         if args.workers <= 0:
             parser.error("--workers must be > 0")
         if args.timeout <= 0:
             parser.error("--timeout must be > 0")
-        return args.func(args)
+        if args.limit is not None and args.limit <= 0:
+            parser.error("--limit must be > 0")
+    elif args.cmd in {"find", "open"}:
+        if args.top <= 0:
+            parser.error("--top must be > 0")
+        if getattr(args, "open", None) is not None and args.open <= 0:
+            parser.error("--open must be > 0")
+    elif args.cmd == "index":
+        if args.batch_size <= 0:
+            parser.error("--batch-size must be > 0")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.cmd is None:
         parser.print_help()
         return 2
-    return args.func(args)
+
+    _validate_args(parser, args)
+    args.console = Console(color=False if args.no_color else None)
+
+    try:
+        return int(args.func(args) or 0)
+    except KeyboardInterrupt:
+        args.console.error("Cancelled by user.")
+        return 130
+    except BrokenPipeError:
+        return 1
+    except (sqlite3.Error, OSError, RuntimeError, ImportError, ValueError) as exc:
+        args.console.error(str(exc) or exc.__class__.__name__)
+        args.console.hint("Re-run with a valid index path or retry after closing locked files.", stderr=True)
+        return 1

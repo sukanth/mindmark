@@ -2,32 +2,16 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from .defaults import DEFAULT_MODEL, default_db_path
 from .parser import Bookmark
 
-DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
-
 _SCHEMA_VERSION = 3
-
-
-def default_db_path() -> Path:
-    env = os.environ.get("MINDMARK_HOME")
-    if env:
-        base = Path(env)
-    elif os.name == "nt":
-        # On Windows, use %LOCALAPPDATA%\mindmark (dotfolders are unusual)
-        local = os.environ.get("LOCALAPPDATA")
-        base = Path(local) / "mindmark" if local else Path.home() / ".mindmark"
-    else:
-        base = Path.home() / ".mindmark"
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "index.db"
 
 
 _SCHEMA = """

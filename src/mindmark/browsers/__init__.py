@@ -6,13 +6,10 @@ rest of mindmark.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from pathlib import Path
 import json
 import sqlite3
 
 from ..parser import Bookmark
-from ..index import SyncResult
 from .paths import detect_browsers, BrowserProfile, SUPPORTED_BROWSERS
 
 
@@ -37,8 +34,9 @@ def collect_all_bookmarks(
     """
     profiles = detect_browsers()
     if browser_filter:
-        filt = browser_filter.lower()
-        profiles = [p for p in profiles if p.browser_name.lower() == filt]
+        filt = browser_filter.strip().lower()
+        if filt:
+            profiles = [p for p in profiles if p.browser_name.lower() == filt]
 
     results: list[tuple[BrowserProfile, list[Bookmark]]] = []
     for profile in profiles:
