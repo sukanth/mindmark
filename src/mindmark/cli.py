@@ -22,6 +22,7 @@ _SUPPORTED_BROWSER_NAMES = {
     "brave": "Brave",
     "firefox": "Firefox",
 }
+_WRAP_BREAK_AFTER = "/\\?&=#._-"
 
 
 def _console(args: argparse.Namespace) -> Console:
@@ -252,6 +253,141 @@ def _format_score(score: object) -> str:
         return "n/a"
 
 
+def _display_text(value: object, fallback: str = "") -> str:
+    text = "" if value is None else str(value)
+    text = " ".join(text.split())
+    return text or fallback
+
+
+def _find_output_width(console: Console) -> int:
+    is_tty = getattr(console.stdout, "isatty", lambda: False)
+    if is_tty():
+        columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+    else:
+        columns = 100
+    return max(40, min(columns, 160))
+
+
+def _wrap_cell(text: str, width: int) -> list[str]:
+    width = max(1, width)
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        if len(word) > width:
+            if current:
+                lines.append(current)
+                current = ""
+            chunks = _split_long_token(word, width)
+            lines.extend(chunks[:-1])
+            current = chunks[-1]
+            continue
+
+        candidate = word if not current else f"{current} {word}"
+        if len(candidate) <= width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _split_long_token(token: str, width: int) -> list[str]:
+    chunks: list[str] = []
+    remaining = token
+    while len(remaining) > width:
+        cut = max(remaining.rfind(ch, 1, width + 1) for ch in _WRAP_BREAK_AFTER)
+        if cut >= 0:
+            cut += 1
+        else:
+            cut = width
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:]
+    chunks.append(remaining)
+    return chunks
+
+
+def _wrap_detail(label: str, value: object, width: int) -> list[str]:
+    text = _display_text(value)
+    if not text:
+        return []
+
+    prefix = f"{label}: "
+    content_width = max(1, width - len(prefix))
+    chunks = _wrap_cell(text, content_width)
+    return [prefix + chunks[0], *[(" " * len(prefix)) + chunk for chunk in chunks[1:]]]
+
+
+def _find_table_widths(total_width: int, result_count: int) -> tuple[int, int, int]:
+    index_width = max(2, len(str(result_count)))
+    score_width = len("Score")
+    title_width = max(12, total_width - index_width - score_width - 4)
+    return index_width, score_width, title_width
+
+
+def _render_find_results(
+    console: Console,
+    results: list[dict],
+    *,
+    query: str,
+    include_excerpt: bool,
+) -> None:
+    width = _find_output_width(console)
+    index_width, score_width, title_width = _find_table_widths(
+        width,
+        len(results),
+    )
+    detail_indent = " " * (index_width + score_width + 4)
+    detail_width = max(20, width - len(detail_indent))
+
+    heading = f"Search results for {query!r} ({len(results)})"
+    for line in _wrap_cell(heading, width):
+        console.out(console.style(line, "bold"))
+    console.out()
+
+    header = (
+        f"{'No':>{index_width}}  "
+        f"{'Score':<{score_width}}  "
+        f"{'Title':<{title_width}}"
+    )
+    divider = (
+        f"{'-' * index_width}  "
+        f"{'-' * score_width}  "
+        f"{'-' * title_width}"
+    )
+    console.out(console.style(header.rstrip(), "bold"))
+    console.out(divider)
+
+    for i, result in enumerate(results, 1):
+        title = _display_text(result["title"], "(untitled)")
+        folder = _display_text(result.get("folder_path"), "(root)")
+        title_lines = _wrap_cell(title, title_width)
+
+        for line_index, title_part in enumerate(title_lines):
+            number = str(i) if line_index == 0 else ""
+            score = _format_score(result.get("score")) if line_index == 0 else ""
+            row = (
+                f"{number:>{index_width}}  "
+                f"{score:<{score_width}}  "
+                f"{title_part:<{title_width}}"
+            )
+            console.out(row.rstrip())
+
+        for detail in _wrap_detail("Folder", folder, detail_width):
+            console.out(f"{detail_indent}{detail}")
+        for detail in _wrap_detail("URL", result["url"], detail_width):
+            console.out(f"{detail_indent}{detail}")
+        if include_excerpt and result.get("relevant_excerpt"):
+            for detail in _wrap_detail("Excerpt", result["relevant_excerpt"], detail_width):
+                console.out(f"{detail_indent}{detail}")
+
+
 def _cmd_find(args: argparse.Namespace) -> int:
     from .index import Index
 
@@ -290,18 +426,12 @@ def _cmd_find(args: argparse.Namespace) -> int:
         _print_json(console, results, preserve_order=True)
         return 0
 
-    for i, r in enumerate(results, 1):
-        folder = r.get("folder_path") or "(root)"
-        url = r["url"]
-        console.out(f"{i:2d}. {console.style(r['title'], 'bold')}")
-        console.out(
-            "    "
-            f"score={console.style(_format_score(r.get('score')), 'accent')}  "
-            f"folder={folder}"
-        )
-        console.out(f"    url={url}")
-        if include_excerpt and r.get("relevant_excerpt"):
-            console.out(f"    ⤵ {r['relevant_excerpt']}")
+    _render_find_results(
+        console,
+        results,
+        query=args.query,
+        include_excerpt=include_excerpt,
+    )
     console.hint(f"Open a result with: mindmark find {args.query!r} --open N")
     return 0
 
