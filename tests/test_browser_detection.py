@@ -1,9 +1,75 @@
 """Tests for browser detection and path resolution."""
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
-from mindmark.browsers.paths import detect_browsers, BrowserProfile
+import pytest
+
+from mindmark.browsers.paths import BrowserProfile, detect_browsers
+
+
+SUPPORTED_PLATFORMS = ("win32", "darwin", "linux")
+PROFILE_NAMES = {
+    "Chrome": "Default",
+    "Edge": "Profile 1",
+    "Brave": "Profile 2",
+    "Firefox": "abc12345.default-release",
+}
+
+
+def _configure_platform(monkeypatch, tmp_path: Path, platform: str) -> dict[str, Path]:
+    roots = {
+        "home": tmp_path / "home",
+        "local": tmp_path / "local",
+        "roaming": tmp_path / "roaming",
+    }
+    for root in roots.values():
+        root.mkdir()
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(Path, "home", lambda: roots["home"])
+    monkeypatch.setenv("LOCALAPPDATA", str(roots["local"]))
+    monkeypatch.setenv("APPDATA", str(roots["roaming"]))
+    return roots
+
+
+def _browser_base(roots: dict[str, Path], platform: str, browser: str) -> Path:
+    paths = {
+        "win32": {
+            "Chrome": roots["local"] / "Google" / "Chrome" / "User Data",
+            "Edge": roots["local"] / "Microsoft" / "Edge" / "User Data",
+            "Brave": roots["local"] / "BraveSoftware" / "Brave-Browser" / "User Data",
+            "Firefox": roots["roaming"] / "Mozilla" / "Firefox" / "Profiles",
+        },
+        "darwin": {
+            "Chrome": roots["home"] / "Library" / "Application Support" / "Google" / "Chrome",
+            "Edge": roots["home"] / "Library" / "Application Support" / "Microsoft Edge",
+            "Brave": (
+                roots["home"]
+                / "Library"
+                / "Application Support"
+                / "BraveSoftware"
+                / "Brave-Browser"
+            ),
+            "Firefox": roots["home"] / "Library" / "Application Support" / "Firefox" / "Profiles",
+        },
+        "linux": {
+            "Chrome": roots["home"] / ".config" / "google-chrome",
+            "Edge": roots["home"] / ".config" / "microsoft-edge",
+            "Brave": roots["home"] / ".config" / "BraveSoftware" / "Brave-Browser",
+            "Firefox": roots["home"] / ".mozilla" / "firefox",
+        },
+    }
+    return paths[platform][browser]
+
+
+def _create_fake_profile(base: Path, browser: str) -> tuple[str, str, Path]:
+    browser_type = "firefox" if browser == "Firefox" else "chromium"
+    profile_name = PROFILE_NAMES[browser]
+    profile_dir = base / profile_name
+    profile_dir.mkdir(parents=True)
+    bookmark_path = profile_dir / ("places.sqlite" if browser_type == "firefox" else "Bookmarks")
+    bookmark_path.write_text("fake bookmark storage")
+    return profile_name, browser_type, bookmark_path
 
 
 def test_browser_profile_source_id():
@@ -27,62 +93,34 @@ def test_browser_profile_custom_source_id():
     assert p.source_id == "custom:id"
 
 
-def test_detect_browsers_returns_list(tmp_path):
+@pytest.mark.parametrize("platform", SUPPORTED_PLATFORMS)
+def test_detect_browsers_returns_empty_list_without_profiles(tmp_path, monkeypatch, platform):
     """detect_browsers should return a list (possibly empty) on any platform."""
-    # With a fake home, no browsers should be detected
-    with patch("mindmark.browsers.paths._home", return_value=tmp_path):
-        with patch("mindmark.browsers.paths._local_app_data", return_value=tmp_path / "Local"):
-            with patch("mindmark.browsers.paths._app_data", return_value=tmp_path / "Roaming"):
-                profiles = detect_browsers()
-    assert isinstance(profiles, list)
+    _configure_platform(monkeypatch, tmp_path, platform)
+
+    profiles = detect_browsers()
+
+    assert profiles == []
 
 
-def test_detect_chromium_with_fake_profile(tmp_path):
-    """Simulate a Chrome installation with a Default profile."""
-    if sys.platform == "darwin":
-        chrome_dir = tmp_path / "Library" / "Application Support" / "Google" / "Chrome"
-    elif sys.platform.startswith("linux"):
-        chrome_dir = tmp_path / ".config" / "google-chrome"
-    else:
-        chrome_dir = tmp_path / "Google" / "Chrome" / "User Data"
+@pytest.mark.parametrize("platform", SUPPORTED_PLATFORMS)
+def test_detect_supported_browser_profiles_by_platform(tmp_path, monkeypatch, platform):
+    """Simulate all supported browsers on every supported platform."""
+    roots = _configure_platform(monkeypatch, tmp_path, platform)
+    expected = {}
+    for browser in PROFILE_NAMES:
+        profile_name, browser_type, bookmark_path = _create_fake_profile(
+            _browser_base(roots, platform, browser),
+            browser,
+        )
+        expected[(browser, profile_name)] = (browser_type, bookmark_path)
 
-    default_profile = chrome_dir / "Default"
-    default_profile.mkdir(parents=True)
-    (default_profile / "Bookmarks").write_text('{"roots":{}}')
+    profiles = detect_browsers()
 
-    with patch("mindmark.browsers.paths._home", return_value=tmp_path):
-        with patch("mindmark.browsers.paths._local_app_data", return_value=tmp_path):
-            profiles = detect_browsers()
-
-    chrome_profiles = [p for p in profiles if p.browser_name == "Chrome"]
-    assert len(chrome_profiles) >= 1
-    assert chrome_profiles[0].profile_name == "Default"
-    assert chrome_profiles[0].browser_type == "chromium"
-
-
-def test_detect_firefox_with_fake_profile(tmp_path):
-    """Simulate a Firefox installation with a profile."""
-    if sys.platform == "darwin":
-        ff_dir = tmp_path / "Library" / "Application Support" / "Firefox" / "Profiles"
-    elif sys.platform.startswith("linux"):
-        ff_dir = tmp_path / ".mozilla" / "firefox"
-    else:
-        ff_dir = tmp_path / "Roaming" / "Mozilla" / "Firefox" / "Profiles"
-
-    profile_dir = ff_dir / "abc12345.default-release"
-    profile_dir.mkdir(parents=True)
-    # Create a minimal places.sqlite
-    import sqlite3
-    db = profile_dir / "places.sqlite"
-    con = sqlite3.connect(db)
-    con.execute("CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT)")
-    con.close()
-
-    with patch("mindmark.browsers.paths._home", return_value=tmp_path):
-        with patch("mindmark.browsers.paths._app_data", return_value=tmp_path / "Roaming"):
-            profiles = detect_browsers()
-
-    ff_profiles = [p for p in profiles if p.browser_name == "Firefox"]
-    assert len(ff_profiles) >= 1
-    assert ff_profiles[0].browser_type == "firefox"
-    assert "default-release" in ff_profiles[0].profile_name
+    detected = {(p.browser_name, p.profile_name): p for p in profiles}
+    assert set(detected) == set(expected)
+    for key, (browser_type, bookmark_path) in expected.items():
+        profile = detected[key]
+        assert profile.browser_type == browser_type
+        assert profile.bookmark_path == bookmark_path
+        assert profile.source_id == f"{key[0].lower()}:{key[1]}"

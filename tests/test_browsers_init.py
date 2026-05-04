@@ -1,8 +1,9 @@
 """Tests for the browsers orchestration layer (__init__.py)."""
 import json
-import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
+
+import pytest
 
 from mindmark.browsers import (
     parse_browser_bookmarks,
@@ -11,7 +12,11 @@ from mindmark.browsers import (
 from mindmark.browsers.paths import BrowserProfile
 
 
-def _make_chromium_profile(tmp_path: Path) -> BrowserProfile:
+def _make_chromium_profile(
+    tmp_path: Path,
+    browser_name: str = "Chrome",
+    profile_name: str = "Default",
+) -> BrowserProfile:
     """Create a fake Chromium profile with a Bookmarks JSON file."""
     bookmark_file = tmp_path / "Bookmarks"
     data = {
@@ -30,9 +35,9 @@ def _make_chromium_profile(tmp_path: Path) -> BrowserProfile:
     }
     bookmark_file.write_text(json.dumps(data))
     return BrowserProfile(
-        browser_name="Chrome",
+        browser_name=browser_name,
         browser_type="chromium",
-        profile_name="Default",
+        profile_name=profile_name,
         bookmark_path=bookmark_file,
     )
 
@@ -87,38 +92,54 @@ def test_parse_browser_bookmarks_unsupported():
         profile_name="Default",
         bookmark_path=Path("/fake"),
     )
-    try:
+    with pytest.raises(ValueError, match="Unsupported"):
         parse_browser_bookmarks(profile)
-        assert False, "Should have raised ValueError"
-    except ValueError as e:
-        assert "Unsupported" in str(e)
 
 
-def test_collect_all_bookmarks_with_filter(tmp_path):
-    chrome_dir = tmp_path / "chrome"
-    chrome_dir.mkdir()
-    chrome_profile = _make_chromium_profile(chrome_dir)
+def test_collect_all_bookmarks_with_case_insensitive_filter(tmp_path):
+    profiles = []
+    for browser, profile_name in [
+        ("Chrome", "Default"),
+        ("Edge", "Profile 1"),
+        ("Brave", "Profile 2"),
+    ]:
+        browser_dir = tmp_path / browser.lower()
+        browser_dir.mkdir()
+        profiles.append(_make_chromium_profile(browser_dir, browser, profile_name))
 
     ff_dir = tmp_path / "firefox"
     ff_dir.mkdir()
-    ff_profile = _make_firefox_profile(ff_dir)
+    profiles.append(_make_firefox_profile(ff_dir))
 
-    fake_profiles = [chrome_profile, ff_profile]
+    with patch("mindmark.browsers.detect_browsers", return_value=profiles):
+        for browser_filter, expected_browser in [
+            ("chrome", "Chrome"),
+            ("EDGE", "Edge"),
+            (" Edge ", "Edge"),
+            ("bRaVe", "Brave"),
+            ("FIREFOX", "Firefox"),
+        ]:
+            results = collect_all_bookmarks(browser_filter=browser_filter)
+            assert [profile.browser_name for profile, _ in results] == [expected_browser]
+            assert results[0][1]
 
-    with patch("mindmark.browsers.detect_browsers", return_value=fake_profiles):
-        # Filter to Chrome only
-        results = collect_all_bookmarks(browser_filter="Chrome")
-        assert len(results) == 1
-        assert results[0][0].browser_name == "Chrome"
+        assert collect_all_bookmarks(browser_filter="safari") == []
+        assert collect_all_bookmarks(browser_filter="unknown-browser") == []
 
-        # Filter to Firefox only
-        results = collect_all_bookmarks(browser_filter="firefox")
-        assert len(results) == 1
-        assert results[0][0].browser_name == "Firefox"
-
-        # No filter — gets all
         results = collect_all_bookmarks(browser_filter=None)
-        assert len(results) == 2
+        assert [profile.browser_name for profile, _ in results] == [
+            "Chrome",
+            "Edge",
+            "Brave",
+            "Firefox",
+        ]
+        whitespace_results = collect_all_bookmarks(browser_filter="  ")
+        assert [profile.browser_name for profile, _ in whitespace_results] == [
+            "Chrome",
+            "Edge",
+            "Brave",
+            "Firefox",
+        ]
 
 
 def test_collect_all_bookmarks_no_browsers():
@@ -127,17 +148,25 @@ def test_collect_all_bookmarks_no_browsers():
         assert results == []
 
 
-def test_collect_all_bookmarks_handles_parse_error(tmp_path, capsys):
-    """A broken profile should print a warning and not crash."""
+def test_collect_all_bookmarks_warns_and_continues_after_parse_error(tmp_path, capsys):
+    """A broken profile should print a warning and not block valid profiles."""
     bad_profile = BrowserProfile(
         browser_name="Chrome",
         browser_type="chromium",
         profile_name="Corrupt",
         bookmark_path=tmp_path / "nonexistent",
     )
-    with patch("mindmark.browsers.detect_browsers", return_value=[bad_profile]):
+
+    good_dir = tmp_path / "good-edge"
+    good_dir.mkdir()
+    good_profile = _make_chromium_profile(good_dir, "Edge", "Default")
+
+    with patch("mindmark.browsers.detect_browsers", return_value=[bad_profile, good_profile]):
         results = collect_all_bookmarks()
-        assert results == []
+        assert len(results) == 1
+        assert results[0][0].browser_name == "Edge"
+        assert len(results[0][1]) == 2
         captured = capsys.readouterr()
         assert "warning" in captured.err
         assert "Chrome" in captured.err
+        assert "Corrupt" in captured.err
